@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from app.config import settings
+from app.models import OpenWebUIReply
+
+logger = logging.getLogger(__name__)
 
 
 class YouTrackError(RuntimeError):
@@ -15,6 +19,7 @@ class YouTrackError(RuntimeError):
 @dataclass(slots=True)
 class YouTrackClient:
     base_url: str = settings.youtrack_base_url
+    browser_url: str = settings.youtrack_browser_url
     token: str = settings.youtrack_token
 
     def _headers(self) -> dict[str, str]:
@@ -87,4 +92,113 @@ class YouTrackClient:
             "/api/articles",
             params={"fields": "id,idReadable,summary"},
             json_body=payload,
+        )
+
+    async def get_issue(self, issue_id: str) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            f"/api/issues/{issue_id}",
+            params={"fields": "id,idReadable,summary,description,project(id,shortName,name)"},
+        )
+
+    async def list_issue_work_items(self, issue_id: str) -> list[dict[str, Any]]:
+        return await self._request(
+            "GET",
+            f"/api/issues/{issue_id}/timeTracking/workItems",
+            params={"fields": "id,text,date,duration(minutes),type(id,name),author(id,login,fullName)"},
+        )
+
+    async def update_work_item(self, issue_id: str, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/api/issues/{issue_id}/timeTracking/workItems/{item_id}",
+            params={"fields": "id,text,date,duration(minutes)"},
+            json_body=payload,
+        )
+
+    def issue_url(self, issue_id_readable: str | None) -> str | None:
+        if not issue_id_readable:
+            return None
+        return f"{self.browser_url.rstrip('/')}/issue/{issue_id_readable}"
+
+
+@dataclass(slots=True)
+class OpenWebUIClient:
+    base_url: str = settings.openwebui_base_url
+    chat_completions_path: str = settings.openwebui_chat_completions_path
+    api_token: str = settings.openwebui_api_token
+    model_id: str = settings.openwebui_model_id
+    timeout_seconds: int = settings.openwebui_timeout_seconds
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        return headers
+
+    async def _chat(self, messages: list[dict[str, str]], response_format: dict[str, Any] | None = None) -> OpenWebUIReply:
+        if not self.api_token:
+            raise RuntimeError("OPENWEBUI_API_TOKEN is not configured.")
+
+        url = f"{self.base_url.rstrip('/')}/{self.chat_completions_path.lstrip('/')}"
+        payload = {
+            "model": self.model_id,
+            "messages": messages,
+        }
+        if response_format:
+            payload["response_format"] = response_format
+        logger.info("Calling Open WebUI model '%s' at %s", self.model_id, url)
+        async with httpx.AsyncClient(timeout=float(self.timeout_seconds)) as client:
+            response = await client.post(url, headers=self._headers(), json=payload)
+        if response.is_error:
+            logger.error("Open WebUI request failed: status=%s body=%s", response.status_code, response.text)
+            raise RuntimeError(f"Open WebUI API error {response.status_code}: {response.text}")
+        data = response.json()
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        content = (message.get("content") or "").strip()
+        finish_reason = choice.get("finish_reason")
+        tool_calls = message.get("tool_calls") or []
+        tool_calls_detected = bool(tool_calls)
+        if settings.verbose:
+            logger.debug("Open WebUI raw response: %s", data)
+        logger.info(
+            "Open WebUI reply received successfully for model '%s' finish_reason=%s tool_calls=%s content_length=%s",
+            self.model_id,
+            finish_reason,
+            tool_calls_detected,
+            len(content),
+        )
+        return OpenWebUIReply(
+            content=content,
+            finish_reason=finish_reason,
+            tool_calls_detected=tool_calls_detected,
+            raw_response=data,
+        )
+
+    async def generate_reply(self, prompt: str) -> OpenWebUIReply:
+        return await self._chat(
+            [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ]
+        )
+
+    async def generate_structured_reply(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> OpenWebUIReply:
+        return await self._chat(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
         )

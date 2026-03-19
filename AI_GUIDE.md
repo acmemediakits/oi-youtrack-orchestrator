@@ -27,12 +27,18 @@ Implemented today:
 - deterministic customer/project matching
 - Docker build context prepared for the Lada host
 - local prompt/skill workspace started in the repository root
+- hybrid mail workflow: YTBot can suggest a structured execution plan, while the backend executes YouTrack endpoints locally
+- planner-controlled issue metadata for IMAP mode: YTBot can suggest explicit issue title, issue description, and default assignee
+- post-commit email replies now come from actual execution results instead of optimistic pre-action drafts
+- the default assignee label `developers` maps to the explicit YouTrack login `acmemediakits` in current tenant assumptions
 
 Not yet complete:
 
 - richer OpenAPI descriptions/examples for better tool discovery in Open WebUI
-- real mailbox sync workflows beyond basic IMAP service support
-- SMTP actions and outbound clarification messages
+- better email-mode prompting for mailbox-driven workflows
+- persistent email thread context across clarification loops instead of relying only on the visible quoted thread
+- better normalization of planner-generated issue metadata in edge cases
+- validate and harden assignee application against tenant-specific YouTrack field behavior
 - stronger parsing for daily summaries and mixed worklog narratives
 - dedicated system prompts for role, behavior, and confirmation strategy
 - reusable skills and prompt assets for YouTrack, mailbox triage, and daily closing flows
@@ -91,6 +97,18 @@ Success criteria:
 - OpenAPI operation names and descriptions are self-explanatory
 - the workflow works from a normal user chat, not only direct API calls
 
+### Outcome 4b: Reliable IMAP execution
+
+The email reader should benefit from YTBot understanding without depending on Open WebUI tool execution reliability.
+
+Success criteria:
+
+- YTBot can read an email thread and return a structured operational plan
+- the IMAP caller executes YouTrack endpoints locally instead of waiting for model-side tool completion
+- tool-call failures from Open WebUI do not block mailbox automation
+- clarification replies can enrich the next execution attempt with better project or issue hints
+- IMAP-created issues should have clean title/description metadata and receive the expected default assignee
+
 ### Outcome 5: Prompt and skill layer
 
 The model should have a stable operating behavior, not just a reachable API.
@@ -139,6 +157,7 @@ Success criteria:
 - define the primary system prompt for the assistant role
 - define confirmation policy for ambiguous project/time/KB operations
 - create initial skills/instruction packs for:
+  - mailbox email intake and reply behavior
   - YouTrack project and issue operations
   - worklog extraction from natural language
   - knowledge capture from snippets and notes
@@ -157,6 +176,8 @@ Success criteria:
 
 - implement mailbox polling or manual fetch endpoint
 - normalize incoming mail thread data
+- use YTBot as a planner that returns structured execution hints instead of delegating final tool execution to Open WebUI
+- let the planner provide explicit issue title/description/assignee metadata for issue creation quality
 - support clarification loops tied to the selected communication channel
 - prepare SMTP sending for follow-up questions and summaries
 
@@ -181,15 +202,18 @@ Success criteria:
 - keep business rules in the backend, not only in model prompts
 - preserve a local audit trail for every write attempt
 - optimize for solo-work practicality over enterprise complexity
+- for mailbox automation, prefer a planner/executor split: model decides, backend executes
+- after every relevant code change, update `AI_GUIDE.md` and `WORKLOG_AI.md`
 
 ## Next Recommended Tasks
 
 - improve OpenAPI descriptions so Open WebUI recognizes tools more naturally
-- draft the first system prompt for the assistant's operational behavior
+- refine the YTBot planner prompt so IMAP replies produce better project and issue hints
+- validate the exact YouTrack assignee-field behavior on the real tenant if `developers` needs a different identifier than the current login-style payload
 - define the first skill set for issue creation, worklog logging, and KB capture
 - test `POST /requests/ingest` and `POST /actions/preview` with real client-like inputs
 - define the first real customer directory entries
-- decide whether mailbox ingestion should be pull-based or triggered manually from Open WebUI
+- add persistent thread-state storage for email clarification loops
 - connect the prompt and skill assets to the actual Open WebUI assistant configuration
 
 ## Repo Plan

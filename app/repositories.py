@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from app.config import settings
-from app.models import ActionPreview, CommitResult, CustomerRule, NormalizedRequest
+from app.models import ActionPreview, CommitResult, CustomerRule, MailProcessingRecord, NormalizedRequest
 from app.storage import JsonStore
 
 
@@ -61,3 +61,14 @@ class CustomerDirectoryRepository:
     def list_all(self) -> list[CustomerRule]:
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         return [CustomerRule.model_validate(item) for item in raw]
+
+
+class MailProcessingRepository(JsonStore[MailProcessingRecord]):
+    def __init__(self) -> None:
+        super().__init__("mail_processing.json", MailProcessingRecord)
+
+    def find_by_message_id(self, message_id: str) -> MailProcessingRecord | None:
+        for item in self.list_all():
+            if item.message_id == message_id:
+                return item
+        return None

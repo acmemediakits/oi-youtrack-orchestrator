@@ -132,16 +132,31 @@ class IngestRequestInput(BaseModel):
     text: str
     sender: str | None = None
     subject: str | None = None
+    customer_label: str | None = None
+    project_id: str | None = None
 
 
 class PreviewInput(BaseModel):
     text: str | None = None
     request_id: str | None = None
+    customer_label: str | None = None
+    project_id: str | None = None
 
 
 class CommitInput(BaseModel):
     preview_id: str
     confirm: bool = False
+
+
+class IssueEditInput(BaseModel):
+    summary: str | None = None
+    description: str | None = None
+
+
+class WorkItemEditInput(BaseModel):
+    text: str | None = None
+    duration_minutes: int | None = Field(default=None, gt=0)
+    work_date: date | None = None
 
 
 class CustomerRule(BaseModel):
@@ -155,7 +170,44 @@ class CustomerRule(BaseModel):
 
 class MailboxMessage(BaseModel):
     message_id: str
+    mailbox_uid: str
     sender: str
     subject: str
     text: str
     received_at: datetime
+
+
+class MailProcessingRecord(BaseModel):
+    id: str = Field(default_factory=lambda: f"mail_{uuid4().hex}")
+    message_id: str
+    mailbox_uid: str
+    sender: str
+    subject: str
+    status: Literal["processed", "rejected_domain", "error"]
+    response_text: str | None = None
+    error: str | None = None
+    finish_reason: str | None = None
+    tool_calls_detected: bool = False
+    raw_openwebui_response: dict[str, Any] = Field(default_factory=dict)
+    processed_at: datetime = Field(default_factory=utc_now)
+
+
+class OpenWebUIReply(BaseModel):
+    content: str
+    finish_reason: str | None = None
+    tool_calls_detected: bool = False
+    raw_response: dict[str, Any] = Field(default_factory=dict)
+
+
+class MailExecutionPlan(BaseModel):
+    request_text: str
+    customer_label: str | None = None
+    project_hint: str | None = None
+    project_id: str | None = None
+    issue_summary: str | None = None
+    issue_description: str | None = None
+    issue_assignee: str | None = None
+    needs_clarification: bool = False
+    clarification_question: str | None = None
+    reply_intent: Literal["execute", "clarify", "ignore"] = "execute"
+    reply_draft: str | None = None

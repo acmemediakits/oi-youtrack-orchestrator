@@ -7,6 +7,8 @@ description: Use when the user describes time spent in natural language and you 
 
 Use this skill when the input contains durations, calls, fixes, support work, or day-close summaries that should become tracked time.
 
+When the input comes from email, read the full message and preserve the sender's explicit wording for the work description whenever possible.
+
 ## Workflow
 
 1. Parse the message into separate activity chunks.
@@ -29,9 +31,13 @@ Use this skill when the input contains durations, calls, fixes, support work, or
 - If project is clear but issue is missing, use the configured service/default issue only if the backend preview marks it as acceptable.
 - If one sentence includes both issue-like work and time, let the preview propose both an issue action and a worklog action.
 - If multiple clients are mentioned in one summary, keep their time separated.
+- If the user provides an explicit comment block for the worklog, preserve it exactly and do not rewrite it.
+- Do not prepend labels such as `Commento:` inside the saved worklog text unless the user explicitly wants that label stored.
 
 ## Preferred tool sequence
 
+- Use `GET /issues/{issue_id}/work-items` when you need to inspect existing worklogs.
+- Use `POST /issues/{issue_id}/work-items/{item_id}/edit` when the user wants to correct an existing work item.
 - Use `POST /actions/preview` for free-form day-close notes.
 - Use `POST /requests/ingest` first if sender/customer normalization would improve project matching.
 - Use `POST /actions/commit` only after reviewing the worklog candidates.

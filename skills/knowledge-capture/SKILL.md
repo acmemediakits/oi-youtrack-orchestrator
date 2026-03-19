@@ -7,6 +7,8 @@ description: Use when the user wants to save commands, procedures, notes, or reu
 
 Use this skill when the user says to save, remember, document, or archive a command, note, procedure, or reusable snippet.
 
+When the content comes from email, use the full body to determine whether the note is operational knowledge, client-specific knowledge, or just incidental context.
+
 ## Workflow
 
 1. Identify the content to preserve.

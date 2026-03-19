@@ -37,6 +37,17 @@ def split_sentences(text: str) -> list[str]:
     return [normalize_text(chunk) for chunk in chunks if normalize_text(chunk)]
 
 
+def extract_explicit_worklog_comment(text: str) -> str | None:
+    pattern = re.compile(
+        r"(?:commento\s+sulla\s+lavorazione|commento)\s*:\s*(.+)$",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    return normalize_text(match.group(1))
+
+
 def extract_duration_minutes(text: str) -> int | None:
     match = HOURS_PATTERN.search(text)
     if not match:
@@ -52,8 +63,29 @@ def extract_duration_minutes(text: str) -> int | None:
 class ProjectMatcher:
     directory: CustomerDirectoryRepository
 
-    def match(self, text: str, sender: str | None = None) -> ProjectMatch:
-        lowered = text.lower()
+    def match(
+        self,
+        text: str,
+        sender: str | None = None,
+        customer_label: str | None = None,
+        project_id: str | None = None,
+    ) -> ProjectMatch:
+        if project_id:
+            candidate = ProjectCandidate(
+                project_id=project_id,
+                confidence=1.0,
+                reason="explicit project override",
+            )
+            return ProjectMatch(
+                status="matched",
+                candidates=[candidate],
+                selected_project_id=project_id,
+                needs_confirmation=False,
+                question=None,
+            )
+
+        match_text = " ".join(part for part in [text, customer_label] if part)
+        lowered = match_text.lower()
         sender = (sender or "").lower()
         candidates: list[ProjectCandidate] = []
 
@@ -108,8 +140,13 @@ class RequestService:
     matcher: ProjectMatcher
 
     def ingest(self, payload: IngestRequestInput) -> NormalizedRequest:
-        project_match = self.matcher.match(payload.text, payload.sender)
-        customer_label = project_match.selected_project_id or (
+        project_match = self.matcher.match(
+            payload.text,
+            payload.sender,
+            customer_label=payload.customer_label,
+            project_id=payload.project_id,
+        )
+        customer_label = payload.customer_label or project_match.selected_project_id or (
             project_match.candidates[0].project_id if project_match.candidates else None
         )
         urgency = "high" if "urgente" in payload.text.lower() else "medium"
@@ -140,10 +177,19 @@ class PreviewService:
             if not request:
                 raise ValueError(f"Unknown request_id {payload.request_id}")
             text = request.text
-            project_match = request.project_match
+            project_match = self.matcher.match(
+                text,
+                request.sender,
+                customer_label=payload.customer_label or request.customer_label,
+                project_id=payload.project_id or request.project_match.selected_project_id,
+            )
         elif payload.text:
             text = normalize_text(payload.text)
-            project_match = self.matcher.match(text)
+            project_match = self.matcher.match(
+                text,
+                customer_label=payload.customer_label,
+                project_id=payload.project_id,
+            )
             request = None
         else:
             raise ValueError("Either text or request_id must be provided.")
@@ -152,6 +198,7 @@ class PreviewService:
         worklog_ops: list[WorklogOperation] = []
         knowledge_ops: list[KnowledgeOperation] = []
         open_questions = list(filter(None, [project_match.question]))
+        explicit_worklog_comment = extract_explicit_worklog_comment(text)
 
         for chunk in split_sentences(text):
             lowered = chunk.lower()
@@ -176,6 +223,7 @@ class PreviewService:
                 issue_id = issue_id_match.group(1) if issue_id_match else None
                 needs_confirmation = False
                 project_id = project_match.selected_project_id
+                worklog_description = explicit_worklog_comment or chunk
 
                 if not issue_id and not project_id:
                     needs_confirmation = True
@@ -193,38 +241,58 @@ class PreviewService:
                         issue_id=issue_id or settings.default_service_issue or None,
                         project_id=project_id,
                         duration_minutes=duration,
-                        description=chunk,
+                        description=worklog_description,
                         work_date=date.today(),
                         needs_confirmation=needs_confirmation,
                     )
                 )
 
                 if any(keyword in lowered for keyword in ["bug", "fix", "risolto", "feature", "ticket"]):
+                    action = "update" if issue_id else "create"
                     issue_ops.append(
                         IssueOperation(
-                            action="update" if issue_id else "create",
+                            action=action,
                             project_id=project_id,
                             issue_id=issue_id,
                             summary=self._issue_summary(chunk),
-                            description=chunk,
+                            description=explicit_worklog_comment or chunk,
+                            assignee=self._default_issue_assignee(action),
                             confidence=0.65 if issue_id else 0.8,
                             needs_confirmation=project_match.status != "matched" or not issue_id,
                         )
                     )
                 continue
 
-            if any(keyword in lowered for keyword in ["bug", "fix", "risolto", "errore", "feature", "richiesta"]):
+            if any(
+                keyword in lowered
+                for keyword in ["bug", "fix", "risolto", "errore", "feature", "richiesta", "debug", "supporto"]
+            ):
+                action = "update" if issue_id_match else "create"
                 issue_ops.append(
                     IssueOperation(
-                        action="update" if issue_id_match else "create",
+                        action=action,
                         project_id=project_match.selected_project_id,
                         issue_id=issue_id_match.group(1) if issue_id_match else None,
                         summary=self._issue_summary(chunk),
                         description=chunk,
+                        assignee=self._default_issue_assignee(action),
                         confidence=0.6 if issue_id_match else 0.75,
                         needs_confirmation=project_match.status != "matched" or not issue_id_match,
                     )
                 )
+
+        if not issue_ops and not worklog_ops and not knowledge_ops and text:
+            issue_ops.append(
+                IssueOperation(
+                    action="create",
+                    project_id=project_match.selected_project_id,
+                    summary=text[:120],
+                    description=text,
+                    assignee=self._default_issue_assignee("create"),
+                    confidence=0.7 if project_match.selected_project_id else 0.4,
+                    needs_confirmation=project_match.status != "matched",
+                )
+            )
 
         requires_confirmation = (
             project_match.needs_confirmation
@@ -273,6 +341,11 @@ class PreviewService:
             f"{len(worklog_ops)} worklog, {len(knowledge_ops)} articoli KB."
         )
 
+    def _default_issue_assignee(self, action: str) -> str | None:
+        if action != "create":
+            return None
+        return settings.youtrack_default_assignee or None
+
 
 @dataclass(slots=True)
 class CommitService:
@@ -307,26 +380,36 @@ class CommitService:
         for index, operation in enumerate(preview.issue_operations, start=1):
             try:
                 if operation.action == "create":
-                    response = await self.youtrack_client.create_issue(
-                        {
-                            "summary": operation.summary,
-                            "description": operation.description,
-                            "project": {"id": operation.project_id},
-                        }
-                    )
+                    request_payload = {
+                        "summary": operation.summary,
+                        "description": operation.description,
+                        "project": {"id": operation.project_id},
+                    }
+                    response = await self.youtrack_client.create_issue(request_payload)
+                    assignment_error = None
+                    if operation.assignee:
+                        assignment_error = await self._assign_issue(response, operation.assignee)
+                        if assignment_error:
+                            errors.append(assignment_error)
                 else:
                     response = await self.youtrack_client.update_issue(
                         operation.issue_id,
                         {"summary": operation.summary, "description": operation.description},
                     )
+                    assignment_error = None
                 issue_results.append(
                     OperationResult(
                         kind=ActionKind.issue,
                         status="success",
                         local_ref=f"issue_{index}",
                         remote_id=response.get("idReadable") or response.get("id"),
-                        message="Issue sincronizzata.",
-                        payload=response,
+                        message="Issue sincronizzata." if not assignment_error else "Issue sincronizzata con warning.",
+                        payload={
+                            **response,
+                            "url": self.youtrack_client.issue_url(response.get("idReadable") or response.get("id")),
+                            "assignee": operation.assignee,
+                            "assignment_error": assignment_error,
+                        },
                     )
                 )
             except Exception as exc:
@@ -359,7 +442,11 @@ class CommitService:
                         local_ref=f"worklog_{index}",
                         remote_id=response.get("id"),
                         message="Work item creato.",
-                        payload=response,
+                        payload={
+                            **response,
+                            "issue_id": operation.issue_id,
+                            "issue_url": self.youtrack_client.issue_url(operation.issue_id),
+                        },
                     )
                 )
             except Exception as exc:
@@ -389,7 +476,10 @@ class CommitService:
                         local_ref=f"knowledge_{index}",
                         remote_id=response.get("idReadable") or response.get("id"),
                         message="Articolo KB creato.",
-                        payload=response,
+                        payload={
+                            **response,
+                            "url": self.youtrack_client.issue_url(response.get("idReadable") or response.get("id")),
+                        },
                     )
                 )
             except Exception as exc:
@@ -403,8 +493,13 @@ class CommitService:
                     )
                 )
 
+        success_count = sum(
+            1
+            for result in [*issue_results, *worklog_results, *knowledge_results]
+            if result.status == "success"
+        )
         status = "success"
-        if errors and (issue_results or worklog_results or knowledge_results):
+        if errors and success_count > 0:
             status = "partial_success"
         elif errors:
             status = "blocked"
@@ -426,3 +521,47 @@ class CommitService:
                 updated_request = request.model_copy(update={"status": RequestStatus.committed})
                 self.requests.upsert(updated_request.id, updated_request)
         return result
+
+    async def _assign_issue(self, response: dict, assignee: str) -> str | None:
+        issue_ref = response.get("idReadable") or response.get("id")
+        if not issue_ref:
+            return f"Assignee '{assignee}' not applied because the created issue has no readable reference."
+
+        payload_variants = [
+            {
+                "customFields": [
+                    {
+                        "name": settings.youtrack_assignee_field_name,
+                        "$type": "SingleUserIssueCustomField",
+                        "value": {"login": settings.youtrack_default_assignee_login or assignee},
+                    }
+                ]
+            },
+            {
+                "customFields": [
+                    {
+                        "name": settings.youtrack_assignee_field_name,
+                        "$type": "SingleUserIssueCustomField",
+                        "value": {"name": assignee},
+                    }
+                ]
+            },
+            {
+                "customFields": [
+                    {
+                        "name": settings.youtrack_assignee_field_name,
+                        "$type": "SingleUserIssueCustomField",
+                        "value": {"fullName": assignee},
+                    }
+                ]
+            },
+        ]
+
+        last_error = None
+        for variant in payload_variants:
+            try:
+                await self.youtrack_client.update_issue(issue_ref, variant)
+                return None
+            except Exception as exc:
+                last_error = str(exc)
+        return f"Assignee '{assignee}' could not be applied to {issue_ref}: {last_error}"

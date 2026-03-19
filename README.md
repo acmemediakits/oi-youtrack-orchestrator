@@ -34,7 +34,9 @@ L'OpenAPI sarà disponibile su `/openapi.json`, direttamente riusabile come tool
 
 - `data/client_directory.json`: rubrica clienti -> progetto YouTrack
 - `data/`: storage locale per richieste, preview e commit
-- `.env`: token YouTrack, tenant URL, cartelle KB di default, mailbox IMAP
+- `.env`: token YouTrack, tenant URL, cartelle KB di default, mailbox IMAP/SMTP, filtro domini e accesso Open WebUI
+- logs Docker: il worker mail scrive eventi su polling IMAP, filtro domini, chiamata Open WebUI e invio SMTP
+- cartelle IMAP: `INBOX`, `PROCESSING`, `PROCESSED`, `FAILED`, `REJECTED` usate come stato operativo principale del workflow mail
 
 ## Endpoints
 
@@ -43,9 +45,15 @@ L'OpenAPI sarà disponibile su `/openapi.json`, direttamente riusabile come tool
 - `GET /projects`
 - `POST /actions/preview`
 - `POST /actions/commit`
+- `POST /mail/poll/run`
+- `GET /test?heartbeat=...`
+- `GET /test?mailto=...`
+- `GET /test?mailjoke=...`
 
 ## Note v1
 
 - Il parsing linguistico usa euristiche deterministiche e non un LLM interno.
 - Open WebUI può usare il backend come tool OpenAPI e lasciare al modello il compito di produrre testo/decisioni.
-- La lettura IMAP è supportata via servizio dedicato; la v1 non effettua sincronizzazione continua da sola.
+- La lettura IMAP è supportata via servizio dedicato e può girare in polling automatico.
+- Il layer mail usa un filtro esplicito di domini mittenti autorizzati.
+- Lo stato dei messaggi email è gestito principalmente via spostamento tra cartelle IMAP; il JSON locale resta solo audit tecnico.

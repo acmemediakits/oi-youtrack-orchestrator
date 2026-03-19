@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from app.clients import YouTrackClient
-from app.repositories import CommitRepository, CustomerDirectoryRepository, PreviewRepository, RequestRepository
+from app.clients import OpenWebUIClient, YouTrackClient
+from app.mail_agent import MailAutomationRunner, MailAutomationService
+from app.mailbox import MailboxService
+from app.repositories import (
+    CommitRepository,
+    CustomerDirectoryRepository,
+    MailProcessingRepository,
+    PreviewRepository,
+    RequestRepository,
+)
 from app.services import CommitService, PreviewService, ProjectMatcher, RequestService
 
 
@@ -20,6 +28,11 @@ def get_preview_repository() -> PreviewRepository:
 @lru_cache
 def get_commit_repository() -> CommitRepository:
     return CommitRepository()
+
+
+@lru_cache
+def get_mail_processing_repository() -> MailProcessingRepository:
+    return MailProcessingRepository()
 
 
 @lru_cache
@@ -52,6 +65,16 @@ def get_youtrack_client() -> YouTrackClient:
 
 
 @lru_cache
+def get_openwebui_client() -> OpenWebUIClient:
+    return OpenWebUIClient()
+
+
+@lru_cache
+def get_mailbox_service() -> MailboxService:
+    return MailboxService()
+
+
+@lru_cache
 def get_commit_service() -> CommitService:
     return CommitService(
         previews=get_preview_repository(),
@@ -59,3 +82,21 @@ def get_commit_service() -> CommitService:
         requests=get_request_repository(),
         youtrack_client=get_youtrack_client(),
     )
+
+
+@lru_cache
+def get_mail_automation_service() -> MailAutomationService:
+    return MailAutomationService(
+        mailbox=get_mailbox_service(),
+        openwebui=get_openwebui_client(),
+        processed=get_mail_processing_repository(),
+        request_service=get_request_service(),
+        preview_service=get_preview_service(),
+        commit_service=get_commit_service(),
+        youtrack_client=get_youtrack_client(),
+    )
+
+
+@lru_cache
+def get_mail_automation_runner() -> MailAutomationRunner:
+    return MailAutomationRunner(service=get_mail_automation_service())
