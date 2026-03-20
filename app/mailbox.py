@@ -171,6 +171,33 @@ class MailboxService:
         mailbox.logout()
         logger.info("Marked email uid=%s as seen.", mailbox_uid)
 
+    def ensure_runtime_folders(self) -> None:
+        if not settings.mailbox_imap_host or not settings.mailbox_username or not settings.mailbox_password:
+            logger.info("IMAP folder bootstrap skipped: IMAP configuration is incomplete.")
+            return
+        runtime = self._runtime()
+        socket.setdefaulttimeout(settings.mailbox_imap_timeout_seconds)
+        mailbox = None
+        logger.info(
+            "Ensuring IMAP runtime folders exist for inbox=%s processing=%s processed=%s failed=%s rejected=%s",
+            runtime.mailbox_folders.inbox,
+            runtime.mailbox_folders.processing,
+            runtime.mailbox_folders.processed,
+            runtime.mailbox_folders.failed,
+            runtime.mailbox_folders.rejected,
+        )
+        try:
+            mailbox = self._connect_imap()
+            mailbox.login(settings.mailbox_username, settings.mailbox_password)
+            self._ensure_folders(mailbox)
+            logger.info("IMAP folder bootstrap completed successfully.")
+        finally:
+            if mailbox is not None:
+                try:
+                    mailbox.logout()
+                except Exception:
+                    logger.warning("IMAP logout failed after folder bootstrap.", exc_info=settings.verbose)
+
     def sender_domain(self, sender: str) -> str | None:
         _, email_address = parseaddr(sender)
         if "@" not in email_address:
@@ -250,11 +277,28 @@ class MailboxService:
             runtime.mailbox_folders.failed,
             runtime.mailbox_folders.rejected,
         ):
-            create_status, _ = mailbox.create(folder)
-            if create_status in {"OK", "NO"}:
-                logger.debug("IMAP ensure folder=%s status=%s", folder, create_status)
+            create_status, create_data = mailbox.create(folder)
+            response_text = " ".join(self._decode_imap_line(item) for item in (create_data or []))
+            already_exists = "ALREADYEXISTS" in response_text.upper()
+            if create_status == "OK":
+                logger.info("IMAP created folder=%s", folder)
+                self._subscribe_folder(mailbox, folder)
+            elif create_status == "NO" and already_exists:
+                logger.info("IMAP folder already exists folder=%s", folder)
+                self._subscribe_folder(mailbox, folder)
+            elif create_status == "NO":
+                logger.error("IMAP could not create folder=%s response=%s", folder, create_data)
             else:
-                logger.warning("Unexpected IMAP CREATE status for folder=%s status=%s", folder, create_status)
+                logger.warning("Unexpected IMAP CREATE status for folder=%s status=%s response=%s", folder, create_status, create_data)
+
+    def _subscribe_folder(self, mailbox, folder: str) -> None:
+        status, data = mailbox.subscribe(folder)
+        if status == "OK":
+            logger.debug("IMAP subscribed folder=%s", folder)
+        elif status == "NO":
+            logger.warning("IMAP subscribe rejected for folder=%s response=%s", folder, data)
+        else:
+            logger.warning("Unexpected IMAP SUBSCRIBE status for folder=%s status=%s response=%s", folder, status, data)
 
     def _capabilities(self, mailbox) -> set[str]:
         caps = getattr(mailbox, "capabilities", ()) or ()
@@ -265,3 +309,8 @@ class MailboxService:
             else:
                 normalized.add(str(item).upper())
         return normalized
+
+    def _decode_imap_line(self, value) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="ignore")
+        return str(value)

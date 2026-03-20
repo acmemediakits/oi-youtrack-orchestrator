@@ -56,6 +56,21 @@ class MailAutomationService:
             existing = self.processed.find_by_message_id(message.message_id)
             if existing:
                 logger.info("Skipping already processed email message_id=%s", message.message_id)
+                try:
+                    self.mailbox.mark_seen(message.mailbox_uid)
+                    target_folder = self._runtime().mailbox_folders.processed
+                    if existing.status == "rejected_domain":
+                        target_folder = self._runtime().mailbox_folders.rejected
+                    elif existing.status == "error":
+                        target_folder = self._runtime().mailbox_folders.failed
+                    self.mailbox.move_message(message.mailbox_uid, target_folder)
+                    logger.info(
+                        "Finalized duplicate email message_id=%s by moving it to folder=%s",
+                        message.message_id,
+                        target_folder,
+                    )
+                except Exception:
+                    logger.exception("Failed to finalize duplicate email message_id=%s", message.message_id)
                 continue
             requester_name, requester_email = parse_mail_identity(message.sender)
             approval = self.admin_approvals.approve_from_message(requester_email, message.text) if self.admin_approvals else None

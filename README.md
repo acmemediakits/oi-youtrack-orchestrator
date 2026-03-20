@@ -48,6 +48,7 @@ L'OpenAPI sarà disponibile su `/openapi.json`, direttamente riusabile come tool
 - autenticazione: cookie HTTP-only derivato da `PANEL_ADMIN_PASSWORD`
 - gestione utenti: whitelist con `full_name`, `email`, `youtrack_assignee_email`, `user_type`, `active`
 - UX attuale: dashboard branded, tabella utenti, modale add/edit, sezioni runtime e secret status collapsable
+- debug: sezione `Recent application logs` con gli eventi recenti del processo e file log in `data/app.log`
 
 ## RBAC e approval
 
@@ -106,8 +107,11 @@ docker logs acme_youtrack_api --tail=100
 - Open WebUI può usare il backend come tool OpenAPI e lasciare al modello il compito di produrre testo/decisioni.
 - Il backend ora espone sia tool di scrittura sia tool di ricerca/listing, così l'assistente può cercare contesto prima di chiedere dettagli all'utente.
 - La lettura IMAP è supportata via servizio dedicato e può girare in polling automatico.
+- In fase di startup il backend prova anche ad assicurare le cartelle runtime IMAP (`PROCESSING`, `PROCESSED`, `FAILED`, `REJECTED`) e a sottoscriverle.
 - Il layer mail usa un filtro esplicito di domini mittenti autorizzati.
 - Le email rumorose possono essere trattate in modalità helpdesk/assist senza creare ticket YouTrack di default.
 - Lo stato dei messaggi email è gestito principalmente via spostamento tra cartelle IMAP; il JSON locale resta solo audit tecnico.
+- I messaggi già processati non vengono più lasciati in loop come `UNSEEN`: il runner li marca `Seen` e li finalizza nella cartella coerente con lo stato registrato.
 - Il parser Open WebUI ora alza un errore esplicito se riceve `200 OK` con payload malformato.
 - In questo ambiente i test completi potrebbero non girare se mancano dipendenze Python come `pydantic`.
+- Nota client IMAP: durante il debug le cartelle runtime risultano visibili in Aurora, mentre Roundcube sulla stessa casella non le espone correttamente. Questo al momento sembra un limite del client webmail, non del backend.

@@ -31,6 +31,28 @@ Open points:
 - blockers, risks, or next steps
 ```
 
+## 2026-03-20 15:05
+
+Context:
+- The mailbox workflow needed a real production-like debug pass because IMAP folders appeared missing in webmail and already-processed messages kept resurfacing in `INBOX`.
+
+Changes:
+- Added panel-visible application logs backed by `data/app.log` plus an in-memory recent log buffer, so runtime issues can be inspected directly from `/panel`.
+- Added IMAP startup bootstrap so runtime folders are ensured on application start, not only during fetch/move flows.
+- Fixed duplicate-mail handling so messages already present in local processing records are marked `Seen` and moved to the appropriate operational folder instead of being re-read every poll cycle.
+- Iterated on IMAP folder handling after live validation: first exposed that the provider rejects our `LIST` patterns, then removed `LIST` as a hard dependency and relied on `CREATE`/`ALREADYEXISTS` plus `SUBSCRIBE`.
+- Verified with BrowserOS that Aurora shows `FAILED`, `PROCESSED`, `PROCESSING`, and `REJECTED`, which confirms the backend-side mailbox workflow is working and that Roundcube is the client-specific weak point.
+- Mirrored all relevant mailbox/panel-debug changes into `lada/`.
+
+Verification:
+- Ran `python3 -m py_compile app/mail_agent.py lada/app/mail_agent.py app/mailbox.py lada/app/mailbox.py app/main.py lada/app/main.py app/logging_utils.py lada/app/logging_utils.py`.
+- Inspected `/panel` logs live during multiple redeploys and confirmed successful folder bootstrap, subscription, zero unseen messages after duplicate finalization, and stable mail polling cycles.
+- Inspected the same mailbox in Roundcube and Aurora through BrowserOS; Aurora displayed the runtime folders while Roundcube did not.
+
+Open points:
+- If Roundcube must remain the reference client, we may need a provider/client-specific note or workaround for folder visibility.
+- We still need to commit and push this mailbox-debug package once documentation is aligned.
+
 ## 2026-03-20 10:20
 
 Context:

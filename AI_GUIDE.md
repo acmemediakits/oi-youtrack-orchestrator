@@ -43,6 +43,9 @@ Implemented today:
 - RBAC is active for `visitor`, `team`, and `power` users
 - email `admin_scope` requests now require temporary-token approval from `SUPER_ADMIN_EMAIL`
 - panel UX now includes a client-facing branded dashboard, one-column content flow, modal add/edit user management, and collapsible runtime/secrets sections
+- the panel now exposes recent application logs for operational debugging
+- IMAP startup now ensures runtime folders on boot and finalizes duplicate messages instead of re-reading the same unseen email forever
+- Aurora confirms the runtime IMAP folders are real and subscribed; Roundcube appears to have a client-specific visibility limitation for those folders
 - root changes are mirrored in `lada/` so deployment and local source stay aligned
 
 Not yet complete:
@@ -60,6 +63,7 @@ Not yet complete:
 - robust error taxonomy and retry logic
 - panel actions beyond edit/upsert, such as quick enable/disable or delete with confirmation
 - live runtime validation of the refreshed panel after container rebuild on the deployed host
+- a documented operator workaround or UI note for Roundcube folder visibility differences versus Aurora
 
 ## Target Outcomes
 
@@ -246,6 +250,7 @@ Success criteria:
 - optimize for solo-work practicality over enterprise complexity
 - for mailbox automation, prefer a planner/executor split: model decides, backend executes
 - keep `.env` limited to secrets/bootstrap values, and keep mutable runtime settings in JSON-backed storage
+- when debugging mailbox behavior, trust server/runtime logs and cross-check with more than one mail client before blaming backend state
 - after every relevant code change, update `AI_GUIDE.md` and `WORKLOG_AI.md`
 
 ## Next Recommended Tasks
@@ -261,6 +266,7 @@ Success criteria:
 - connect the prompt and skill assets to the actual Open WebUI assistant configuration
 - rebuild and smoke-test the deployed container so the new panel UX is visible on `http://192.168.69.6:8086/panel`
 - add quick user actions in the panel if operations need faster enable/disable flows
+- decide whether to document Roundcube as unsupported for folder visibility or to add provider-specific mailbox notes
 
 ## Repo Plan
 

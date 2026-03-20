@@ -17,6 +17,7 @@ from app.dependencies import (
     get_issue_subscription_service,
     get_mail_automation_runner,
     get_mail_automation_service,
+    get_mailbox_service,
     get_openwebui_client,
     get_permission_service,
     get_preview_service,
@@ -27,6 +28,7 @@ from app.dependencies import (
     get_user_directory_service,
     get_youtrack_client,
 )
+from app.logging_utils import get_log_file_path, get_recent_logs, setup_logging
 from app.models import (
     AssistantProjectContext,
     ArticleSearchResult,
@@ -49,14 +51,16 @@ from app.models import (
     WorkItemEditInput,
 )
 
-logging.basicConfig(
-    level=logging.DEBUG if settings.verbose else logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+setup_logging()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    try:
+        get_mailbox_service().ensure_runtime_folders()
+    except Exception:
+        logger.exception("IMAP folder bootstrap failed during startup.")
     runner = get_mail_automation_runner()
     runner.start()
     try:
@@ -636,6 +640,30 @@ def _panel_css() -> str:
       pointer-events: none;
       user-select: none;
     }
+    .log-console {
+      margin-top: 16px;
+      padding: 18px;
+      border-radius: 18px;
+      background: #19233f;
+      color: #dbe7ff;
+      font-family: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 420px;
+      overflow: auto;
+      border: 1px solid rgba(111, 132, 216, 0.22);
+    }
+    .log-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
     @media (max-width: 1024px) {
       .grid-metrics,
       .form-grid {
@@ -800,12 +828,20 @@ def _render_user_modal(editing_user: WhitelistedUser | None = None) -> str:
     """
 
 
-def _render_panel(status_model, users: list, editing_user: WhitelistedUser | None = None, show_user_modal: bool = False) -> str:
+def _render_panel(
+    status_model,
+    users: list,
+    editing_user: WhitelistedUser | None = None,
+    show_user_modal: bool = False,
+    recent_logs: list[str] | None = None,
+    log_path: str = "",
+) -> str:
     runtime_config = status_model.runtime_config
     domains = ", ".join(runtime_config.mailbox_allowed_sender_domains)
     configured_secrets = sum(1 for value in status_model.secrets_status.values() if value)
     missing_secrets = len(status_model.secrets_status) - configured_secrets
     inactive_users = status_model.users_total - status_model.users_active
+    rendered_logs = "\n".join(recent_logs or ["No log entries captured yet."])
     user_rows = "\n".join(
         (
             "<tr>"
@@ -981,6 +1017,25 @@ def _render_panel(status_model, users: list, editing_user: WhitelistedUser | Non
               </ul>
             </div>
           </details>
+
+          <details class="panel-card accordion" open>
+            <summary>
+              <div class="section-toolbar">
+                <div>
+                  <h2>Recent application logs</h2>
+                  <p class="accordion-label">Live debugging view for IMAP bootstrap, mailbox polling, Open WebUI parsing and panel actions.</p>
+                </div>
+                {_status_pill('Live view', 'warn')}
+              </div>
+            </summary>
+            <div class="accordion-body">
+              <div class="log-console">{_escape(rendered_logs)}</div>
+              <div class="log-meta">
+                <span>Showing recent in-memory log lines from the running process.</span>
+                <span>File: {_escape(log_path)}</span>
+              </div>
+            </div>
+          </details>
         </section>
         <footer class="brand-credits">
           <span>Powered by Acme Media Kits. OI panel styling aligned with the Acme brand system.</span>
@@ -1021,7 +1076,12 @@ async def panel_logout() -> Response:
 
 
 @app.get("/panel", response_class=HTMLResponse)
-async def panel_home(request: Request, edit_email: str | None = None, user_modal: str | None = None) -> HTMLResponse:
+async def panel_home(
+    request: Request,
+    edit_email: str | None = None,
+    user_modal: str | None = None,
+    log_lines: int = 120,
+) -> HTMLResponse:
     if not _panel_authenticated(request):
         return HTMLResponse("", status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/panel/login"})
     user_service = get_user_directory_service()
@@ -1029,7 +1089,17 @@ async def panel_home(request: Request, edit_email: str | None = None, user_modal
     editing_user = user_service.resolve(edit_email) if edit_email else None
     show_user_modal = user_modal == "add" or (user_modal == "edit" and editing_user is not None)
     status_model = get_runtime_config_service().panel_status(users)
-    return HTMLResponse(_render_panel(status_model, users, editing_user, show_user_modal))
+    log_lines = max(20, min(log_lines, 400))
+    return HTMLResponse(
+        _render_panel(
+            status_model,
+            users,
+            editing_user,
+            show_user_modal,
+            recent_logs=get_recent_logs(log_lines),
+            log_path=str(get_log_file_path()),
+        )
+    )
 
 
 @app.post("/panel/settings")
