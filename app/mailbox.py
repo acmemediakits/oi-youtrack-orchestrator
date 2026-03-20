@@ -5,6 +5,7 @@ import imaplib
 import logging
 import socket
 import smtplib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import parseaddr
@@ -15,7 +16,28 @@ from app.models import MailboxMessage
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
 class MailboxService:
+    runtime_config: any = None
+
+    def _runtime(self):
+        if self.runtime_config:
+            return self.runtime_config.get()
+        from app.models import RuntimeConfig, RuntimeMailboxFolders
+
+        return RuntimeConfig(
+            verbose=settings.verbose,
+            mailbox_poll_interval_seconds=settings.mailbox_poll_interval_seconds,
+            mailbox_allowed_sender_domains=list(settings.mailbox_allowed_sender_domains),
+            mailbox_folders=RuntimeMailboxFolders(
+                inbox=settings.mailbox_folder,
+                processing=settings.mailbox_processing_folder,
+                processed=settings.mailbox_processed_folder,
+                failed=settings.mailbox_failed_folder,
+                rejected=settings.mailbox_rejected_folder,
+            ),
+        )
+
     def _connect_imap(self):
         context = settings.build_imap_ssl_context()
         if settings.mailbox_imap_tls_mode == "starttls":
@@ -48,13 +70,14 @@ class MailboxService:
             logger.info("Mailbox polling skipped: IMAP configuration is incomplete.")
             return []
 
+        runtime = self._runtime()
         messages: list[MailboxMessage] = []
         socket.setdefaulttimeout(settings.mailbox_imap_timeout_seconds)
         logger.info(
             "Connecting to IMAP host=%s port=%s folder=%s",
             settings.mailbox_imap_host,
             settings.mailbox_imap_port,
-            settings.mailbox_folder,
+            runtime.mailbox_folders.inbox,
         )
         mailbox = None
         try:
@@ -62,8 +85,8 @@ class MailboxService:
             mailbox.login(settings.mailbox_username, settings.mailbox_password)
             logger.info("IMAP login succeeded for user=%s", settings.mailbox_username)
             self._ensure_folders(mailbox)
-            status, _ = mailbox.select(settings.mailbox_folder)
-            logger.info("IMAP folder selected: folder=%s status=%s", settings.mailbox_folder, status)
+            status, _ = mailbox.select(runtime.mailbox_folders.inbox)
+            logger.info("IMAP folder selected: folder=%s status=%s", runtime.mailbox_folders.inbox, status)
             status, data = mailbox.search(None, "UNSEEN")
             if status != "OK":
                 logger.warning("IMAP search returned non-OK status=%s", status)
@@ -106,13 +129,14 @@ class MailboxService:
     def move_message(self, mailbox_uid: str, target_folder: str) -> None:
         if not settings.mailbox_imap_host or not settings.mailbox_username or not settings.mailbox_password:
             return
+        runtime = self._runtime()
         socket.setdefaulttimeout(settings.mailbox_imap_timeout_seconds)
         mailbox = self._connect_imap()
         try:
             mailbox.login(settings.mailbox_username, settings.mailbox_password)
             self._ensure_folders(mailbox)
-            mailbox.select(settings.mailbox_folder)
-            logger.info("Moving email uid=%s from %s to %s", mailbox_uid, settings.mailbox_folder, target_folder)
+            mailbox.select(runtime.mailbox_folders.inbox)
+            logger.info("Moving email uid=%s from %s to %s", mailbox_uid, runtime.mailbox_folders.inbox, target_folder)
             move_status = "NO"
             move_data = None
             if "MOVE" in self._capabilities(mailbox):
@@ -138,10 +162,11 @@ class MailboxService:
     def mark_seen(self, mailbox_uid: str) -> None:
         if not settings.mailbox_imap_host or not settings.mailbox_username or not settings.mailbox_password:
             return
+        runtime = self._runtime()
         socket.setdefaulttimeout(settings.mailbox_imap_timeout_seconds)
         mailbox = self._connect_imap()
         mailbox.login(settings.mailbox_username, settings.mailbox_password)
-        mailbox.select(settings.mailbox_folder)
+        mailbox.select(runtime.mailbox_folders.inbox)
         mailbox.store(mailbox_uid, "+FLAGS", "\\Seen")
         mailbox.logout()
         logger.info("Marked email uid=%s as seen.", mailbox_uid)
@@ -153,24 +178,32 @@ class MailboxService:
         return email_address.rsplit("@", 1)[1].lower()
 
     def send_reply(self, original: MailboxMessage, body: str) -> None:
-        if not settings.mailbox_smtp_host or not settings.mailbox_username or not settings.mailbox_password:
-            logger.warning("SMTP reply skipped for message_id=%s because SMTP configuration is incomplete.", original.message_id)
-            return
         _, recipient = parseaddr(original.sender)
         if not recipient:
             logger.warning("SMTP reply skipped for message_id=%s because recipient is invalid.", original.message_id)
             return
-        reply = EmailMessage()
-        reply["From"] = settings.mailbox_username
-        reply["To"] = recipient
-        reply["Subject"] = f"Re: {original.subject}" if original.subject else "Re: richiesta"
-        reply.set_content(body)
+        self.send_message(
+            recipient,
+            f"Re: {original.subject}" if original.subject else "Re: richiesta",
+            body,
+        )
+        logger.info("SMTP reply sent to=%s for message_id=%s", recipient, original.message_id)
+
+    def send_message(self, recipient: str, subject: str, body: str) -> None:
+        if not settings.mailbox_smtp_host or not settings.mailbox_username or not settings.mailbox_password:
+            logger.warning("SMTP send skipped for recipient=%s because SMTP configuration is incomplete.", recipient)
+            return
+        message = EmailMessage()
+        message["From"] = settings.mailbox_username
+        message["To"] = recipient
+        message["Subject"] = subject
+        message.set_content(body)
 
         protocol = settings.mailbox_smtp_protocol.upper()
         logger.info(
-            "Sending SMTP reply to=%s subject=%s host=%s port=%s protocol=%s",
+            "Sending SMTP message to=%s subject=%s host=%s port=%s protocol=%s",
             recipient,
-            reply["Subject"],
+            message["Subject"],
             settings.mailbox_smtp_host,
             settings.mailbox_smtp_port,
             protocol,
@@ -182,7 +215,7 @@ class MailboxService:
                 timeout=settings.mailbox_smtp_timeout_seconds,
             ) as smtp:
                 smtp.login(settings.mailbox_username, settings.mailbox_password)
-                smtp.send_message(reply)
+                smtp.send_message(message)
         else:
             with smtplib.SMTP(
                 settings.mailbox_smtp_host,
@@ -192,8 +225,8 @@ class MailboxService:
                 if protocol == "TLS":
                     smtp.starttls()
                 smtp.login(settings.mailbox_username, settings.mailbox_password)
-                smtp.send_message(reply)
-        logger.info("SMTP reply sent to=%s for message_id=%s", recipient, original.message_id)
+                smtp.send_message(message)
+        logger.info("SMTP message sent to=%s subject=%s", recipient, subject)
 
     def _extract_text(self, parsed: email.message.Message) -> str:
         if parsed.is_multipart():
@@ -209,12 +242,13 @@ class MailboxService:
         return str(payload)
 
     def _ensure_folders(self, mailbox) -> None:
+        runtime = self._runtime()
         for folder in (
-            settings.mailbox_folder,
-            settings.mailbox_processing_folder,
-            settings.mailbox_processed_folder,
-            settings.mailbox_failed_folder,
-            settings.mailbox_rejected_folder,
+            runtime.mailbox_folders.inbox,
+            runtime.mailbox_folders.processing,
+            runtime.mailbox_folders.processed,
+            runtime.mailbox_folders.failed,
+            runtime.mailbox_folders.rejected,
         ):
             create_status, _ = mailbox.create(folder)
             if create_status in {"OK", "NO"}:

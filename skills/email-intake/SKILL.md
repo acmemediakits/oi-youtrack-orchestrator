@@ -9,7 +9,7 @@ Use this skill when the assistant is handling an inbound email through the mailb
 
 ## Primary goal
 
-Read the entire email, understand what the sender is asking, use the available YouTrack tools when appropriate, and generate the reply that should be sent back to the sender.
+Read the entire email, understand what the sender is asking, decide whether it is assist/helpdesk mode or YouTrack mode, use the available YouTrack tools only when appropriate, and generate the reply that should be sent back to the sender.
 
 ## Workflow
 
@@ -21,9 +21,12 @@ Read the entire email, understand what the sender is asking, use the available Y
    - issue IDs, links, and project references
    - urgency signals
 3. Decide whether the email should:
+   - be handled as helpdesk assistance only
+   - be delegated to an internal colleague or third person via summary email only
    - create a new issue
    - edit an existing issue
    - add or edit a worklog
+   - generate a YouTrack time report for a specific period
    - create a knowledge base entry
    - ask for clarification only
 4. Use the relevant tools.
@@ -32,9 +35,13 @@ Read the entire email, understand what the sender is asking, use the available Y
 ## Tool strategy
 
 - Use `POST /requests/ingest` when normalization or project matching helps.
-- Use `GET /projects` if project selection needs validation.
+- Use `GET /projects/search` or `GET /projects` if project selection needs validation.
+- Use `GET /issues/search` or `GET /projects/{project_id}/issues` to recover issue context before asking for IDs.
 - Use `GET /issues/{issue_id}` and `POST /issues/{issue_id}/edit` for issue changes.
+- Use `POST /issues/{issue_id}/work-items` for direct new worklogs when the issue is already known.
 - Use `GET /issues/{issue_id}/work-items` and `POST /issues/{issue_id}/work-items/{item_id}/edit` for worklog corrections.
+- Use `GET /assistant/project-context` or the reporting/search tools when project or issue discovery is the real problem.
+- Use `GET /assistant/time-report/global` for cross-project monthly/hour summaries grouped by project.
 - Use `POST /actions/preview` and `POST /actions/commit` for free-form requests that should become new operations.
 
 ## Rules
@@ -44,6 +51,9 @@ Read the entire email, understand what the sender is asking, use the available Y
 - If multiple requests exist in the same email, keep them separate in your internal reasoning and tool usage.
 - If the sender provides explicit wording for a comment or worklog text, preserve that wording.
 - If you need clarification, ask one compact question rather than a long questionnaire.
+- If the email asks for a summary, explanation, translation, or action extraction, default to helpdesk assistance and do not create a ticket unless explicitly asked.
+- If the email clearly asks you to remind, notify, contact, update, or write to another person, classify it as delegation and send the outgoing email to that person instead of replying with the same draft to the original sender.
+- If the email asks for hours spent in a month or period, treat it as a reporting task and derive the exact date range before answering.
 
 ## Reply style
 

@@ -4,7 +4,17 @@ import json
 from pathlib import Path
 
 from app.config import settings
-from app.models import ActionPreview, CommitResult, CustomerRule, MailProcessingRecord, NormalizedRequest
+from app.models import (
+    ActionPreview,
+    AdminApproval,
+    CommitResult,
+    CustomerRule,
+    IssueSubscription,
+    MailProcessingRecord,
+    NormalizedRequest,
+    RuntimeConfig,
+    WhitelistedUser,
+)
 from app.storage import JsonStore
 
 
@@ -72,3 +82,46 @@ class MailProcessingRepository(JsonStore[MailProcessingRecord]):
             if item.message_id == message_id:
                 return item
         return None
+
+
+class IssueSubscriptionRepository(JsonStore[IssueSubscription]):
+    def __init__(self) -> None:
+        super().__init__("issue_subscriptions.json", IssueSubscription)
+
+    def find_by_issue_and_email(self, issue_id_readable: str, requester_email: str) -> IssueSubscription | None:
+        normalized_email = requester_email.strip().lower()
+        for item in self.list_all():
+            if item.issue_id_readable == issue_id_readable and item.requester_email.lower() == normalized_email:
+                return item
+        return None
+
+
+class RuntimeConfigRepository(JsonStore[RuntimeConfig]):
+    def __init__(self) -> None:
+        super().__init__("runtime_config.json", RuntimeConfig)
+
+    def get_config(self) -> RuntimeConfig | None:
+        return self.get("runtime")
+
+    def save_config(self, config: RuntimeConfig) -> RuntimeConfig:
+        return self.upsert(config.id, config)
+
+
+class UserDirectoryRepository(JsonStore[WhitelistedUser]):
+    def __init__(self) -> None:
+        super().__init__("whitelisted_users.json", WhitelistedUser)
+
+    def find_by_email(self, email: str) -> WhitelistedUser | None:
+        normalized = email.strip().lower()
+        for item in self.list_all():
+            if item.email.lower() == normalized:
+                return item
+        return None
+
+    def delete_user(self, user_id: str) -> None:
+        self.delete(user_id)
+
+
+class AdminApprovalRepository(JsonStore[AdminApproval]):
+    def __init__(self) -> None:
+        super().__init__("admin_approvals.json", AdminApproval)

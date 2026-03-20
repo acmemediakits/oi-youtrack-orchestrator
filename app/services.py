@@ -1,31 +1,75 @@
 from __future__ import annotations
 
+from collections import defaultdict
+import calendar
+import hashlib
 import re
+import secrets
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parseaddr
 
 from app.config import settings
 from app.models import (
+    AssistantProjectContext,
     ActionKind,
     ActionPreview,
+    AdminApproval,
+    ArticleSearchResult,
     CommitInput,
     CommitResult,
+    GlobalTimeTrackingSummary,
     IngestRequestInput,
+    IssueSubscription,
+    IssueSearchResult,
     IssueOperation,
     KnowledgeOperation,
     NormalizedRequest,
     OperationResult,
+    PanelStatus,
+    ProjectSearchResult,
     PreviewInput,
     ProjectCandidate,
     ProjectMatch,
     RequestStatus,
+    RuntimeConfig,
+    RuntimeMailboxFolders,
+    TimeTrackingAuthorSummary,
+    TimeTrackingIssueSummary,
+    TimeTrackingProjectSummary,
+    TimeTrackingSummary,
+    UserType,
+    WhitelistedUser,
     WorklogOperation,
 )
-from app.repositories import CommitRepository, CustomerDirectoryRepository, PreviewRepository, RequestRepository
+from app.repositories import (
+    AdminApprovalRepository,
+    CommitRepository,
+    CustomerDirectoryRepository,
+    IssueSubscriptionRepository,
+    PreviewRepository,
+    RequestRepository,
+    RuntimeConfigRepository,
+    UserDirectoryRepository,
+)
 
 
 ISSUE_ID_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
 HOURS_PATTERN = re.compile(r"(\d+(?:[.,]\d+)?)\s*(ora|ore|h|hr|min|mins|minuti)", re.IGNORECASE)
+MONTH_NAME_TO_NUMBER = {
+    "gennaio": 1,
+    "febbraio": 2,
+    "marzo": 3,
+    "aprile": 4,
+    "maggio": 5,
+    "giugno": 6,
+    "luglio": 7,
+    "agosto": 8,
+    "settembre": 9,
+    "ottobre": 10,
+    "novembre": 11,
+    "dicembre": 12,
+}
 
 
 def normalize_text(text: str) -> str:
@@ -57,6 +101,314 @@ def extract_duration_minutes(text: str) -> int | None:
     if unit.startswith("min"):
         return int(raw_value)
     return int(raw_value * 60)
+
+
+def utc_datetime_from_millis(raw: int | None) -> datetime | None:
+    if raw is None:
+        return None
+    return datetime.fromtimestamp(raw / 1000, tz=timezone.utc)
+
+
+def issue_custom_field_value(issue: dict, field_name: str) -> dict | str | None:
+    for field in issue.get("customFields") or []:
+        if field.get("name") == field_name:
+            return field.get("value")
+    return None
+
+
+def issue_state_name(issue: dict) -> str | None:
+    value = issue_custom_field_value(issue, "State")
+    if isinstance(value, dict):
+        return value.get("name") or value.get("presentation")
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def issue_assignee_name(issue: dict) -> str | None:
+    value = issue_custom_field_value(issue, settings.youtrack_assignee_field_name)
+    if value is None:
+        for field in issue.get("customFields") or []:
+            field_name = (field.get("name") or "").lower()
+            if not any(token in field_name for token in ["assignee", "team", "owner"]):
+                continue
+            value = field.get("value")
+            break
+    if isinstance(value, dict):
+        return value.get("fullName") or value.get("name") or value.get("login")
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def parse_mail_identity(sender: str | None) -> tuple[str | None, str | None]:
+    display_name, email_address = parseaddr(sender or "")
+    if not email_address:
+        return (display_name or None, None)
+    return (display_name or email_address.split("@", 1)[0], email_address.lower())
+
+
+def sender_author_hints(sender: str | None) -> list[str]:
+    display_name, email_address = parse_mail_identity(sender)
+    hints: list[str] = []
+    if display_name:
+        hints.append(display_name.lower())
+    if email_address:
+        hints.append(email_address.lower())
+        hints.append(email_address.split("@", 1)[0].lower())
+    return list(dict.fromkeys(filter(None, hints)))
+
+
+def matches_author_hint(author: dict | None, author_hint: str | None) -> bool:
+    if not author_hint:
+        return True
+    normalized_hint = author_hint.strip().lower()
+    if not normalized_hint:
+        return True
+    values = {
+        ((author or {}).get("fullName") or "").lower(),
+        ((author or {}).get("login") or "").lower(),
+        ((author or {}).get("email") or "").lower(),
+    }
+    return normalized_hint in values
+
+
+def parse_reporting_period(text: str, today: date | None = None) -> tuple[date | None, date | None]:
+    lowered = normalize_text(text).lower()
+    today = today or date.today()
+
+    month_match = re.search(
+        r"\b(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+(\d{4})\b",
+        lowered,
+    )
+    if month_match:
+        month = MONTH_NAME_TO_NUMBER[month_match.group(1)]
+        year = int(month_match.group(2))
+        last_day = calendar.monthrange(year, month)[1]
+        return date(year, month, 1), date(year, month, last_day)
+
+    iso_range = re.search(r"\bdal\s+(\d{4}-\d{2}-\d{2})\s+al\s+(\d{4}-\d{2}-\d{2})\b", lowered)
+    if iso_range:
+        return date.fromisoformat(iso_range.group(1)), date.fromisoformat(iso_range.group(2))
+
+    if "mese scorso" in lowered:
+        year = today.year
+        month = today.month - 1
+        if month == 0:
+            month = 12
+            year -= 1
+        last_day = calendar.monthrange(year, month)[1]
+        return date(year, month, 1), date(year, month, last_day)
+
+    if "questo mese" in lowered:
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        return date(today.year, today.month, 1), date(today.year, today.month, last_day)
+
+    return (None, None)
+
+
+ROLE_CAPABILITIES: dict[UserType, set[str]] = {
+    UserType.visitor: {"create_task", "receive_updates"},
+    UserType.team: {"create_task", "receive_updates", "view_open_tasks", "view_non_archived_projects", "assist_mail"},
+    UserType.power: {
+        "create_task",
+        "receive_updates",
+        "view_open_tasks",
+        "view_non_archived_projects",
+        "assist_mail",
+        "advanced_reads",
+        "time_reports",
+        "knowledge_write",
+        "knowledge_read",
+        "admin_scope_email",
+        "admin_scope_api",
+    },
+}
+
+
+@dataclass(slots=True)
+class RuntimeConfigService:
+    repository: RuntimeConfigRepository
+
+    def get(self) -> RuntimeConfig:
+        existing = self.repository.get_config()
+        if existing:
+            return existing
+        config = RuntimeConfig(
+            verbose=settings.verbose,
+            mailbox_poll_interval_seconds=settings.mailbox_poll_interval_seconds,
+            mailbox_allowed_sender_domains=list(settings.mailbox_allowed_sender_domains),
+            mailbox_folders=RuntimeMailboxFolders(
+                inbox=settings.mailbox_folder,
+                processing=settings.mailbox_processing_folder,
+                processed=settings.mailbox_processed_folder,
+                failed=settings.mailbox_failed_folder,
+                rejected=settings.mailbox_rejected_folder,
+            ),
+        )
+        return self.repository.save_config(config)
+
+    def update(self, **changes) -> RuntimeConfig:
+        current = self.get()
+        updated = current.model_copy(update={**changes, "updated_at": datetime.now(timezone.utc)})
+        saved = self.repository.save_config(updated)
+        logging.getLogger().setLevel(logging.DEBUG if saved.verbose else logging.INFO)
+        return saved
+
+    def panel_status(self, users: list[WhitelistedUser]) -> PanelStatus:
+        return PanelStatus(
+            runtime_config=self.get(),
+            users_total=len(users),
+            users_active=sum(1 for user in users if user.active),
+            secrets_status={
+                "youtrack_token_configured": bool(settings.youtrack_token),
+                "openwebui_api_token_configured": bool(settings.openwebui_api_token),
+                "mailbox_imap_configured": bool(settings.mailbox_imap_host and settings.mailbox_username and settings.mailbox_password),
+                "mailbox_smtp_configured": bool(settings.mailbox_smtp_host and settings.mailbox_username and settings.mailbox_password),
+                "panel_admin_password_configured": bool(settings.panel_admin_password),
+                "super_admin_email_configured": bool(settings.super_admin_email),
+            },
+        )
+
+
+@dataclass(slots=True)
+class UserDirectoryService:
+    repository: UserDirectoryRepository
+
+    def list_users(self) -> list[WhitelistedUser]:
+        return sorted(self.repository.list_all(), key=lambda item: item.full_name.lower())
+
+    def resolve(self, email: str | None) -> WhitelistedUser | None:
+        if not email:
+            return None
+        return self.repository.find_by_email(email)
+
+    def upsert_user(
+        self,
+        *,
+        full_name: str,
+        email: str,
+        original_email: str | None = None,
+        youtrack_assignee_email: str | None,
+        user_type: UserType,
+        active: bool,
+    ) -> WhitelistedUser:
+        normalized_email = email.strip().lower()
+        normalized_original_email = (original_email or "").strip().lower() or None
+        existing = self.repository.find_by_email(normalized_original_email or normalized_email)
+        payload = {
+            "full_name": full_name.strip(),
+            "email": normalized_email,
+            "youtrack_assignee_email": (youtrack_assignee_email or "").strip().lower() or None,
+            "user_type": user_type,
+            "active": active,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if existing:
+            user = existing.model_copy(update=payload)
+            saved = self.repository.upsert(existing.id, user)
+            duplicate = self.repository.find_by_email(normalized_email)
+            if duplicate and duplicate.id != existing.id:
+                self.repository.delete_user(duplicate.id)
+            return saved
+        user = WhitelistedUser(**payload)
+        return self.repository.upsert(user.id, user)
+
+
+@dataclass(slots=True)
+class PermissionService:
+    subscriptions: IssueSubscriptionRepository
+
+    def ensure_active_user(self, user: WhitelistedUser | None) -> WhitelistedUser:
+        if not user or not user.active:
+            raise PermissionError("Utente non autorizzato.")
+        return user
+
+    def has_capability(self, user: WhitelistedUser, capability: str) -> bool:
+        return capability in ROLE_CAPABILITIES.get(user.user_type, set())
+
+    def assert_capability(self, user: WhitelistedUser, capability: str) -> None:
+        self.ensure_active_user(user)
+        if not self.has_capability(user, capability):
+            raise PermissionError("Operazione non consentita per questo utente.")
+
+    def can_modify_issue(self, user: WhitelistedUser, issue_id: str, now: datetime | None = None) -> bool:
+        if user.user_type in {UserType.team, UserType.power}:
+            return True
+        if user.user_type != UserType.visitor:
+            return False
+        now = now or datetime.now(timezone.utc)
+        owned = self.subscriptions.find_by_issue_and_email(issue_id, user.email)
+        if not owned:
+            return False
+        return (now - owned.created_at) <= timedelta(minutes=30)
+
+
+@dataclass(slots=True)
+class AdminApprovalService:
+    approvals: AdminApprovalRepository
+    mailbox: any
+
+    def create(self, message, plan, requester_name: str | None, requester_email: str) -> tuple[AdminApproval, str]:
+        token = secrets.token_urlsafe(16)
+        approval = AdminApproval(
+            requester_email=requester_email,
+            requester_name=requester_name,
+            original_message_id=message.message_id,
+            original_subject=message.subject,
+            token_hash=self._hash_token(token),
+            plan_payload=plan.model_dump(mode="json"),
+            message_payload=message.model_dump(mode="json"),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+        self.approvals.upsert(approval.id, approval)
+        self._send_approval_email(approval, token)
+        return approval, token
+
+    def approve_from_message(self, sender_email: str | None, text: str) -> AdminApproval | None:
+        if not sender_email or sender_email.lower() != settings.super_admin_email.lower():
+            return None
+        token = self._extract_token(text)
+        if not token:
+            return None
+        hashed = self._hash_token(token)
+        for approval in self.approvals.list_all():
+            if approval.token_hash != hashed:
+                continue
+            if approval.used_at is not None or approval.expires_at < datetime.now(timezone.utc):
+                return None
+            refreshed = approval.model_copy(update={"used_at": datetime.now(timezone.utc)})
+            self.approvals.upsert(refreshed.id, refreshed)
+            return refreshed
+        return None
+
+    def _send_approval_email(self, approval: AdminApproval, token: str) -> None:
+        if not settings.super_admin_email:
+            return
+        lines = [
+            "Richiesta admin-scope in attesa di approvazione.",
+            "",
+            f"Richiedente: {approval.requester_name or approval.requester_email}",
+            f"Email: {approval.requester_email}",
+            f"Oggetto: {approval.original_subject or '(senza oggetto)'}",
+            "",
+            "Reply a questa email includendo il token seguente:",
+            token,
+            "",
+            "Il token scade tra 30 minuti.",
+        ]
+        self.mailbox.send_message(
+            settings.super_admin_email,
+            f"Approval richiesta: {approval.original_subject or approval.original_message_id}",
+            "\n".join(lines),
+        )
+
+    def _extract_token(self, text: str) -> str | None:
+        match = re.search(r"\b([A-Za-z0-9_\-]{20,})\b", text or "")
+        return match.group(1) if match else None
+
+    def _hash_token(self, token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 @dataclass(slots=True)
@@ -140,6 +492,7 @@ class RequestService:
     matcher: ProjectMatcher
 
     def ingest(self, payload: IngestRequestInput) -> NormalizedRequest:
+        requester_name, requester_email = parse_mail_identity(payload.sender)
         project_match = self.matcher.match(
             payload.text,
             payload.sender,
@@ -154,6 +507,8 @@ class RequestService:
             source=payload.source,
             text=normalize_text(payload.text),
             sender=payload.sender,
+            requester_email=requester_email,
+            requester_name=requester_name,
             subject=payload.subject,
             customer_label=customer_label,
             urgency=urgency,
@@ -348,6 +703,353 @@ class PreviewService:
 
 
 @dataclass(slots=True)
+class QueryService:
+    directory: CustomerDirectoryRepository
+    youtrack_client: any
+
+    async def search_projects(self, query: str, include_archived: bool = False, limit: int = 10) -> list[ProjectSearchResult]:
+        normalized_query = normalize_text(query).lower()
+        projects = await self.youtrack_client.list_projects()
+        results: list[ProjectSearchResult] = []
+
+        for project in projects:
+            archived = bool(project.get("archived"))
+            if archived and not include_archived:
+                pass
+            score = 0.0
+            reasons: list[str] = []
+            project_values = [
+                (project.get("shortName") or "").lower(),
+                (project.get("name") or "").lower(),
+                (project.get("id") or "").lower(),
+            ]
+            if normalized_query in project_values:
+                score += 0.8
+                reasons.append("exact project match")
+            elif any(normalized_query and normalized_query in value for value in project_values):
+                score += 0.55
+                reasons.append("partial project match")
+
+            for rule in self.directory.list_all():
+                aliases = [rule.customer_label, *rule.aliases]
+                if any(normalized_query == alias.lower() for alias in aliases):
+                    if project.get("id") == rule.default_project_id or project.get("shortName") in rule.project_ids:
+                        score += 0.95
+                        reasons.append(f"customer alias '{rule.customer_label}' matched")
+                elif any(normalized_query in alias.lower() for alias in aliases):
+                    if project.get("id") == rule.default_project_id or project.get("shortName") in rule.project_ids:
+                        score += 0.65
+                        reasons.append(f"customer alias '{rule.customer_label}' partially matched")
+
+            if not archived:
+                score += 0.05
+                reasons.append("non archived priority")
+
+            if score <= 0:
+                continue
+            if archived and not include_archived:
+                continue
+            results.append(
+                ProjectSearchResult(
+                    project_id=project.get("id"),
+                    short_name=project.get("shortName") or project.get("id"),
+                    name=project.get("name") or project.get("shortName") or project.get("id"),
+                    archived=archived,
+                    confidence=min(score, 1.0),
+                    reason=", ".join(dict.fromkeys(reasons)),
+                )
+            )
+
+        results.sort(key=lambda item: (item.archived, -item.confidence, item.name.lower()))
+        return results[:limit]
+
+    async def list_project_issues(
+        self,
+        project_id: str,
+        *,
+        query: str | None = None,
+        only_open: bool = False,
+        assignee: str | None = None,
+        updated_since: date | None = None,
+        limit: int = 20,
+    ) -> list[IssueSearchResult]:
+        project_ref = await self._project_query_reference(project_id)
+        query_parts = [f"project: {project_ref}"]
+        if query:
+            query_parts.append(query)
+        issues = await self.youtrack_client.search_issues(" ".join(query_parts).strip(), limit=max(limit, 50))
+        return self._normalize_issues(
+            issues,
+            query=query,
+            only_open=only_open,
+            assignee=assignee,
+            updated_since=updated_since,
+            limit=limit,
+        )
+
+    async def search_issues(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        only_open: bool = False,
+        assignee: str | None = None,
+        updated_since: date | None = None,
+        limit: int = 20,
+    ) -> list[IssueSearchResult]:
+        query_parts: list[str] = []
+        if project_id:
+            project_ref = await self._project_query_reference(project_id)
+            query_parts.append(f"project: {project_ref}")
+        if query:
+            query_parts.append(query)
+        issues = await self.youtrack_client.search_issues(" ".join(query_parts).strip(), limit=max(limit, 50))
+        return self._normalize_issues(
+            issues,
+            query=query,
+            only_open=only_open,
+            assignee=assignee,
+            updated_since=updated_since,
+            limit=limit,
+        )
+
+    async def summarize_project_time(self, project_id: str, date_from: date, date_to: date) -> TimeTrackingSummary:
+        issues = await self.list_project_issues(project_id, limit=100, only_open=False)
+        total_minutes = 0
+        per_issue: dict[str, TimeTrackingIssueSummary] = {}
+        per_author: dict[str, int] = defaultdict(int)
+
+        for issue in issues:
+            work_items = await self.youtrack_client.list_issue_work_items(issue.issue_id_readable)
+            for item in work_items:
+                work_date = utc_datetime_from_millis(item.get("date"))
+                if not work_date:
+                    continue
+                day = work_date.date()
+                if day < date_from or day > date_to:
+                    continue
+                minutes = ((item.get("duration") or {}).get("minutes")) or 0
+                total_minutes += minutes
+                if issue.issue_id not in per_issue:
+                    per_issue[issue.issue_id] = TimeTrackingIssueSummary(
+                        issue_id=issue.issue_id,
+                        issue_id_readable=issue.issue_id_readable,
+                        summary=issue.summary,
+                        issue_url=issue.url,
+                    )
+                per_issue[issue.issue_id].minutes += minutes
+                author = ((item.get("author") or {}).get("fullName")) or ((item.get("author") or {}).get("login")) or "Unknown"
+                per_author[author] += minutes
+
+        issue_breakdown = list(per_issue.values())
+        for item in issue_breakdown:
+            item.hours = round(item.minutes / 60, 2)
+        issue_breakdown.sort(key=lambda item: item.minutes, reverse=True)
+
+        author_breakdown = [
+            TimeTrackingAuthorSummary(author=author, minutes=minutes, hours=round(minutes / 60, 2))
+            for author, minutes in sorted(per_author.items(), key=lambda pair: pair[1], reverse=True)
+        ]
+
+        project = await self._project_details(project_id)
+        return TimeTrackingSummary(
+            project_id=project_id,
+            project_name=project.get("name") if project else None,
+            date_from=date_from,
+            date_to=date_to,
+            total_minutes=total_minutes,
+            total_hours=round(total_minutes / 60, 2),
+            issue_breakdown=issue_breakdown,
+            author_breakdown=author_breakdown,
+        )
+
+    async def summarize_time_report(
+        self,
+        date_from: date,
+        date_to: date,
+        *,
+        author_hint: str | None = None,
+        include_archived: bool = False,
+    ) -> GlobalTimeTrackingSummary:
+        projects = await self.youtrack_client.list_projects()
+        project_minutes: dict[str, TimeTrackingProjectSummary] = {}
+        issue_sets: dict[str, set[str]] = defaultdict(set)
+        total_minutes = 0
+
+        for project in projects:
+            if project.get("archived") and not include_archived:
+                continue
+            issues = await self.list_project_issues(project.get("id"), limit=100, only_open=False)
+            for issue in issues:
+                work_items = await self.youtrack_client.list_issue_work_items(issue.issue_id_readable)
+                for item in work_items:
+                    work_date = utc_datetime_from_millis(item.get("date"))
+                    if not work_date:
+                        continue
+                    day = work_date.date()
+                    if day < date_from or day > date_to:
+                        continue
+                    if not matches_author_hint(item.get("author"), author_hint):
+                        continue
+
+                    minutes = ((item.get("duration") or {}).get("minutes")) or 0
+                    if minutes <= 0:
+                        continue
+                    project_id = project.get("id")
+                    if project_id not in project_minutes:
+                        project_minutes[project_id] = TimeTrackingProjectSummary(
+                            project_id=project_id,
+                            project_name=project.get("name") or project.get("shortName") or project_id,
+                        )
+                    project_minutes[project_id].minutes += minutes
+                    issue_sets[project_id].add(issue.issue_id)
+                    total_minutes += minutes
+
+        breakdown = list(project_minutes.values())
+        for item in breakdown:
+            item.hours = round(item.minutes / 60, 2)
+            item.issue_count = len(issue_sets[item.project_id])
+        breakdown.sort(key=lambda item: item.minutes, reverse=True)
+
+        return GlobalTimeTrackingSummary(
+            date_from=date_from,
+            date_to=date_to,
+            author_hint=author_hint,
+            total_minutes=total_minutes,
+            total_hours=round(total_minutes / 60, 2),
+            project_breakdown=breakdown,
+        )
+
+    async def list_project_articles(self, project_id: str, query: str | None = None, limit: int = 20) -> list[ArticleSearchResult]:
+        project = await self._project_details(project_id)
+        project_name = project.get("name") if project else project_id
+        raw_articles = await self.youtrack_client.search_articles(query or "", limit=max(limit, 50))
+        filtered = [
+            article
+            for article in raw_articles
+            if ((article.get("project") or {}).get("id") == project_id)
+            or ((article.get("project") or {}).get("name") == project_name)
+        ]
+        return self._normalize_articles(filtered, limit=limit)
+
+    async def search_articles(self, query: str, project_id: str | None = None, limit: int = 20) -> list[ArticleSearchResult]:
+        raw_articles = await self.youtrack_client.search_articles(query, limit=max(limit, 50))
+        if project_id:
+            raw_articles = [
+                article
+                for article in raw_articles
+                if ((article.get("project") or {}).get("id") == project_id)
+                or ((article.get("project") or {}).get("shortName") == project_id)
+            ]
+        return self._normalize_articles(raw_articles, limit=limit)
+
+    async def build_project_context(self, hint: str, limit: int = 10) -> AssistantProjectContext | None:
+        projects = await self.search_projects(hint, include_archived=False, limit=1)
+        if not projects:
+            return None
+        project = projects[0]
+        open_issues = await self.list_project_issues(project.project_id, only_open=True, limit=limit)
+        articles = await self.list_project_articles(project.project_id, limit=min(limit, 5))
+        return AssistantProjectContext(project=project, open_issues=open_issues, recent_articles=articles)
+
+    def _normalize_issues(
+        self,
+        issues: list[dict],
+        *,
+        query: str | None,
+        only_open: bool,
+        assignee: str | None,
+        updated_since: date | None,
+        limit: int,
+    ) -> list[IssueSearchResult]:
+        query_lower = (query or "").lower()
+        assignee_lower = (assignee or "").lower()
+        results: list[IssueSearchResult] = []
+        for issue in issues:
+            resolved = bool(issue.get("resolved"))
+            if only_open and resolved:
+                continue
+            state = issue_state_name(issue)
+            parsed_assignee = issue_assignee_name(issue)
+            updated_at = utc_datetime_from_millis(issue.get("updated"))
+            if assignee_lower and (parsed_assignee or "").lower() != assignee_lower:
+                continue
+            if updated_since and updated_at and updated_at.date() < updated_since:
+                continue
+
+            score = 0.2 if not resolved else 0.0
+            reasons: list[str] = []
+            summary_lower = (issue.get("summary") or "").lower()
+            if query_lower:
+                if query_lower in summary_lower:
+                    score += 0.55
+                    reasons.append("summary matched query")
+                if state and query_lower in state.lower():
+                    score += 0.15
+                    reasons.append("state matched query")
+                if any(keyword in summary_lower for keyword in ["supporto", "call", "meet", "meeting"]):
+                    score += 0.1
+                    reasons.append("operational issue keyword")
+            if updated_at:
+                age_days = max((datetime.now(timezone.utc) - updated_at).days, 0)
+                if age_days <= 14:
+                    score += 0.1
+                    reasons.append("recently updated")
+
+            project = issue.get("project") or {}
+            issue_id_readable = issue.get("idReadable") or issue.get("id")
+            results.append(
+                IssueSearchResult(
+                    issue_id=issue.get("id"),
+                    issue_id_readable=issue_id_readable,
+                    summary=issue.get("summary") or issue_id_readable,
+                    project_id=project.get("id"),
+                    project_short_name=project.get("shortName"),
+                    project_name=project.get("name"),
+                    state=state,
+                    assignee=parsed_assignee,
+                    resolved=resolved,
+                    updated_at=updated_at,
+                    url=self.youtrack_client.issue_url(issue_id_readable),
+                    score=min(score, 1.0),
+                    reason=", ".join(reasons) if reasons else None,
+                )
+            )
+
+        results.sort(key=lambda item: (item.resolved, -(item.score or 0), -(item.updated_at.timestamp() if item.updated_at else 0)))
+        return results[:limit]
+
+    def _normalize_articles(self, articles: list[dict], *, limit: int) -> list[ArticleSearchResult]:
+        results = [
+            ArticleSearchResult(
+                article_id=article.get("id"),
+                article_id_readable=article.get("idReadable"),
+                summary=article.get("summary") or article.get("idReadable") or article.get("id"),
+                project_id=(article.get("project") or {}).get("id"),
+                project_name=(article.get("project") or {}).get("name"),
+                updated_at=utc_datetime_from_millis(article.get("updated")),
+                url=self.youtrack_client.issue_url(article.get("idReadable") or article.get("id")),
+            )
+            for article in articles
+        ]
+        results.sort(key=lambda item: -(item.updated_at.timestamp() if item.updated_at else 0))
+        return results[:limit]
+
+    async def _project_query_reference(self, project_id: str) -> str:
+        project = await self._project_details(project_id)
+        if not project:
+            return project_id
+        return project.get("shortName") or project.get("id") or project_id
+
+    async def _project_details(self, project_id: str) -> dict | None:
+        projects = await self.youtrack_client.list_projects()
+        for project in projects:
+            if project.get("id") == project_id or project.get("shortName") == project_id or project.get("name") == project_id:
+                return project
+        return None
+
+
+@dataclass(slots=True)
 class CommitService:
     previews: PreviewRepository
     commits: CommitRepository
@@ -527,41 +1229,207 @@ class CommitService:
         if not issue_ref:
             return f"Assignee '{assignee}' not applied because the created issue has no readable reference."
 
-        payload_variants = [
-            {
-                "customFields": [
-                    {
-                        "name": settings.youtrack_assignee_field_name,
-                        "$type": "SingleUserIssueCustomField",
-                        "value": {"login": settings.youtrack_default_assignee_login or assignee},
-                    }
-                ]
-            },
-            {
-                "customFields": [
-                    {
-                        "name": settings.youtrack_assignee_field_name,
-                        "$type": "SingleUserIssueCustomField",
-                        "value": {"name": assignee},
-                    }
-                ]
-            },
-            {
-                "customFields": [
-                    {
-                        "name": settings.youtrack_assignee_field_name,
-                        "$type": "SingleUserIssueCustomField",
-                        "value": {"fullName": assignee},
-                    }
-                ]
-            },
+        field_candidates = await self._assignee_field_candidates(issue_ref)
+        if not field_candidates:
+            return f"Assignee '{assignee}' could not be applied to {issue_ref}: no compatible issue custom field was found."
+
+        value_variants = [
+            {"login": settings.youtrack_default_assignee_login or assignee},
+            {"name": assignee},
+            {"fullName": assignee},
         ]
 
         last_error = None
-        for variant in payload_variants:
-            try:
-                await self.youtrack_client.update_issue(issue_ref, variant)
-                return None
-            except Exception as exc:
-                last_error = str(exc)
+        for candidate in field_candidates:
+            field_id = candidate.get("id")
+            field_name = candidate.get("name")
+            field_type = candidate.get("$type") or "SingleUserIssueCustomField"
+            for value in value_variants:
+                try:
+                    if field_id:
+                        payload = {
+                            "id": field_id,
+                            "name": field_name,
+                            "$type": field_type,
+                            "value": value,
+                        }
+                        await self.youtrack_client.update_issue_custom_field(issue_ref, field_id, payload)
+                    else:
+                        await self.youtrack_client.update_issue(
+                            issue_ref,
+                            {
+                                "customFields": [
+                                    {
+                                        "name": field_name,
+                                        "$type": field_type,
+                                        "value": value,
+                                    }
+                                ]
+                            },
+                        )
+                    return None
+                except Exception as exc:
+                    last_error = str(exc)
         return f"Assignee '{assignee}' could not be applied to {issue_ref}: {last_error}"
+
+    async def _assignee_field_candidates(self, issue_ref: str) -> list[dict]:
+        try:
+            issue_fields = await self.youtrack_client.list_issue_custom_fields(issue_ref)
+        except Exception:
+            configured_name = settings.youtrack_assignee_field_name
+            if not configured_name:
+                return []
+            return [{"id": None, "name": configured_name, "$type": "SingleUserIssueCustomField"}]
+
+        candidates: list[dict] = []
+        fallback_candidates: list[dict] = []
+        for field in issue_fields or []:
+            name = field.get("name")
+            field_type = field.get("$type") or ""
+            lowered_name = (name or "").lower()
+            if "userissuecustomfield" in field_type.lower():
+                candidates.append(field)
+                continue
+            if any(token in lowered_name for token in ["assignee", "team", "owner"]):
+                fallback_candidates.append(
+                    {
+                        "id": field.get("id"),
+                        "name": name,
+                        "$type": field_type or "SingleUserIssueCustomField",
+                    }
+                )
+
+        configured_name = settings.youtrack_assignee_field_name
+        if configured_name:
+            fallback_candidates.append({"id": None, "name": configured_name, "$type": "SingleUserIssueCustomField"})
+
+        deduped: list[dict] = []
+        seen = set()
+        for candidate in [*candidates, *fallback_candidates]:
+            key = (candidate.get("id"), candidate.get("name"), candidate.get("$type"))
+            if key in seen:
+                continue
+            deduped.append(candidate)
+            seen.add(key)
+        return deduped
+
+
+@dataclass(slots=True)
+class IssueSubscriptionService:
+    subscriptions: IssueSubscriptionRepository
+    youtrack_client: any
+    mailbox: any
+
+    async def subscribe(self, issue_id_readable: str, requester_email: str, *, requester_name: str | None = None, source_subject: str | None = None) -> IssueSubscription:
+        existing = self.subscriptions.find_by_issue_and_email(issue_id_readable, requester_email)
+        if existing:
+            return existing
+
+        issue = await self.youtrack_client.get_issue(issue_id_readable)
+        snapshot = await self._snapshot(issue_id_readable, issue=issue)
+        subscription = IssueSubscription(
+            issue_id=issue.get("id") or issue_id_readable,
+            issue_id_readable=issue.get("idReadable") or issue_id_readable,
+            summary=issue.get("summary") or issue_id_readable,
+            requester_email=requester_email.lower(),
+            requester_name=requester_name,
+            source_subject=source_subject,
+            state=snapshot["state"],
+            assignee=snapshot["assignee"],
+            resolved=snapshot["resolved"],
+            updated_at=snapshot["updated_at"],
+            worklog_count=snapshot["worklog_count"],
+            total_minutes=snapshot["total_minutes"],
+            last_worklog_at=snapshot["last_worklog_at"],
+        )
+        self.subscriptions.upsert(subscription.id, subscription)
+        return subscription
+
+    async def notify_updates(self) -> list[IssueSubscription]:
+        updated_subscriptions: list[IssueSubscription] = []
+        for subscription in self.subscriptions.list_all():
+            issue = await self.youtrack_client.get_issue(subscription.issue_id_readable)
+            snapshot = await self._snapshot(subscription.issue_id_readable, issue=issue)
+            changes = self._detect_changes(subscription, snapshot)
+            if not changes:
+                continue
+
+            subject = f"Aggiornamento ticket {subscription.issue_id_readable}: {issue.get('summary') or subscription.summary}"
+            body = self._build_update_email(subscription, issue, changes, snapshot)
+            self.mailbox.send_message(subscription.requester_email, subject, body)
+            refreshed = subscription.model_copy(
+                update={
+                    "summary": issue.get("summary") or subscription.summary,
+                    "state": snapshot["state"],
+                    "assignee": snapshot["assignee"],
+                    "resolved": snapshot["resolved"],
+                    "updated_at": snapshot["updated_at"],
+                    "worklog_count": snapshot["worklog_count"],
+                    "total_minutes": snapshot["total_minutes"],
+                    "last_worklog_at": snapshot["last_worklog_at"],
+                    "last_notified_at": datetime.now(timezone.utc),
+                }
+            )
+            self.subscriptions.upsert(refreshed.id, refreshed)
+            updated_subscriptions.append(refreshed)
+        return updated_subscriptions
+
+    async def _snapshot(self, issue_id_readable: str, *, issue: dict | None = None) -> dict:
+        issue = issue or await self.youtrack_client.get_issue(issue_id_readable)
+        work_items = await self.youtrack_client.list_issue_work_items(issue_id_readable)
+        total_minutes = 0
+        last_worklog_at = None
+        for item in work_items:
+            minutes = ((item.get("duration") or {}).get("minutes")) or 0
+            total_minutes += minutes
+            work_date = utc_datetime_from_millis(item.get("date"))
+            if work_date and (last_worklog_at is None or work_date > last_worklog_at):
+                last_worklog_at = work_date
+        return {
+            "state": issue_state_name(issue),
+            "assignee": issue_assignee_name(issue),
+            "resolved": bool(issue.get("resolved")),
+            "updated_at": utc_datetime_from_millis(issue.get("updated")),
+            "worklog_count": len(work_items),
+            "total_minutes": total_minutes,
+            "last_worklog_at": last_worklog_at,
+        }
+
+    def _detect_changes(self, subscription: IssueSubscription, snapshot: dict) -> list[str]:
+        changes: list[str] = []
+        if snapshot["state"] != subscription.state:
+            changes.append(f"stato: {subscription.state or 'n/d'} -> {snapshot['state'] or 'n/d'}")
+        if snapshot["assignee"] != subscription.assignee:
+            changes.append(f"assegnazione: {subscription.assignee or 'n/d'} -> {snapshot['assignee'] or 'n/d'}")
+        if snapshot["resolved"] != subscription.resolved:
+            changes.append("ticket chiuso" if snapshot["resolved"] else "ticket riaperto")
+        if snapshot["worklog_count"] > subscription.worklog_count:
+            delta_minutes = max(snapshot["total_minutes"] - subscription.total_minutes, 0)
+            if delta_minutes > 0:
+                changes.append(f"tempo registrato: +{round(delta_minutes / 60, 2)} ore")
+            else:
+                changes.append("nuova lavorazione registrata")
+        elif snapshot["updated_at"] and subscription.updated_at and snapshot["updated_at"] > subscription.updated_at:
+            changes.append("attivita aggiornata")
+        return changes
+
+    def _build_update_email(self, subscription: IssueSubscription, issue: dict, changes: list[str], snapshot: dict) -> str:
+        issue_ref = issue.get("idReadable") or subscription.issue_id_readable
+        lines = [
+            "Ti aggiorno sul ticket che avevi aperto tramite il bot.",
+            "",
+            f"Ticket: {issue_ref} - {issue.get('summary') or subscription.summary}",
+            f"Link: {self.youtrack_client.issue_url(issue_ref) or 'n/d'}",
+            "",
+            "Aggiornamenti rilevati:",
+        ]
+        lines.extend(f"- {change}" for change in changes)
+        lines.extend(
+            [
+                "",
+                f"Stato attuale: {snapshot['state'] or 'n/d'}",
+                f"Assegnato a: {snapshot['assignee'] or 'n/d'}",
+                f"Ore registrate totali: {round(snapshot['total_minutes'] / 60, 2)}",
+            ]
+        )
+        return "\n".join(lines)

@@ -31,6 +31,19 @@ Implemented today:
 - planner-controlled issue metadata for IMAP mode: YTBot can suggest explicit issue title, issue description, and default assignee
 - post-commit email replies now come from actual execution results instead of optimistic pre-action drafts
 - the default assignee label `developers` maps to the explicit YouTrack login `acmemediakits` in current tenant assumptions
+- query layer primitives now include project search, issue search/listing, project time reports, article search, and assistant-oriented context helpers
+- email planner now supports `assist` mode for summarize/translate/explain/extract-actions flows without creating YouTrack tickets by default
+- assignee updates now inspect issue custom fields dynamically instead of assuming that the field name is always `Assignee`
+- planner mail flow is now LLM-first: the model must classify `assist_intent`, while backend guardrails block drafts-for-third-parties that are not explicitly classified as `delegate`
+- Open WebUI response parsing now fails explicitly on malformed `200` payloads instead of crashing on `NoneType.get`
+- runtime configuration is split from secrets/bootstrap settings
+- a minimal web control panel exists at `/panel/login` and `/panel`
+- runtime settings are editable from JSON-backed storage in `data/`
+- whitelist users now include canonical email, full name, assignee fallback email, role, and active state
+- RBAC is active for `visitor`, `team`, and `power` users
+- email `admin_scope` requests now require temporary-token approval from `SUPER_ADMIN_EMAIL`
+- panel UX now includes a client-facing branded dashboard, one-column content flow, modal add/edit user management, and collapsible runtime/secrets sections
+- root changes are mirrored in `lada/` so deployment and local source stay aligned
 
 Not yet complete:
 
@@ -42,8 +55,11 @@ Not yet complete:
 - stronger parsing for daily summaries and mixed worklog narratives
 - dedicated system prompts for role, behavior, and confirmation strategy
 - reusable skills and prompt assets for YouTrack, mailbox triage, and daily closing flows
+- persistent mailbox thread-state storage beyond visible quoted text
 - production auth/rate limiting on the local API
 - robust error taxonomy and retry logic
+- panel actions beyond edit/upsert, such as quick enable/disable or delete with confirmation
+- live runtime validation of the refreshed panel after container rebuild on the deployed host
 
 ## Target Outcomes
 
@@ -96,6 +112,7 @@ Success criteria:
 - the model discovers and uses functions without endpoint-specific prompting
 - OpenAPI operation names and descriptions are self-explanatory
 - the workflow works from a normal user chat, not only direct API calls
+- the model can discover read/query tools in a fresh thread without requiring a warm-up conversation
 
 ### Outcome 4b: Reliable IMAP execution
 
@@ -108,6 +125,17 @@ Success criteria:
 - tool-call failures from Open WebUI do not block mailbox automation
 - clarification replies can enrich the next execution attempt with better project or issue hints
 - IMAP-created issues should have clean title/description metadata and receive the expected default assignee
+
+### Outcome 4c: Operational query assistant
+
+The assistant should answer management and search questions directly from YouTrack context.
+
+Success criteria:
+
+- project hints like `funky` or `SEA` can resolve to the right project without manual IDs
+- open issues can be listed with meaningful filters and ranking
+- monthly/project time totals can be reported with issue detail
+- existing project knowledge can be searched before the model asks unnecessary clarification questions
 
 ### Outcome 5: Prompt and skill layer
 
@@ -124,6 +152,17 @@ Success criteria:
 - the model follows the same workflow consistently across sessions
 - prompts reduce wrong writes and improve tool selection
 - skills are modular enough to evolve without rewriting the whole setup
+
+### Outcome 5b: Controlled operations dashboard
+
+The local operator should be able to review and adjust runtime configuration without editing files directly on the server.
+
+Success criteria:
+
+- non-secret runtime values are editable through the web panel
+- user whitelist and RBAC assignments are manageable through the same interface
+- the panel is readable enough to demo to clients or internal stakeholders
+- UI changes do not change backend safety rules or bypass API-side enforcement
 
 ### Outcome 6: Daily closing assistant
 
@@ -151,6 +190,7 @@ Success criteria:
 - add request/response examples in OpenAPI
 - improve operation naming for model comprehension
 - verify `ingest -> preview -> commit` with real YouTrack data
+- expose read/query primitives for projects, issues, worklogs, time reports, and knowledge listing
 
 ### Phase 2: Prompt and skill foundation
 
@@ -178,6 +218,7 @@ Success criteria:
 - normalize incoming mail thread data
 - use YTBot as a planner that returns structured execution hints instead of delegating final tool execution to Open WebUI
 - let the planner provide explicit issue title/description/assignee metadata for issue creation quality
+- support helpdesk-style assist mode for email summary/translation/explanation without forcing ticket creation
 - support clarification loops tied to the selected communication channel
 - prepare SMTP sending for follow-up questions and summaries
 
@@ -187,6 +228,7 @@ Success criteria:
 - define structured logging and error codes
 - harden Docker deployment and persistence
 - add smoke tests for deployment and health checks
+- keep panel dependencies aligned with FastAPI form handling requirements such as `python-multipart`
 
 ### Phase 6: Personal operating system
 
@@ -203,6 +245,7 @@ Success criteria:
 - preserve a local audit trail for every write attempt
 - optimize for solo-work practicality over enterprise complexity
 - for mailbox automation, prefer a planner/executor split: model decides, backend executes
+- keep `.env` limited to secrets/bootstrap values, and keep mutable runtime settings in JSON-backed storage
 - after every relevant code change, update `AI_GUIDE.md` and `WORKLOG_AI.md`
 
 ## Next Recommended Tasks
@@ -210,11 +253,14 @@ Success criteria:
 - improve OpenAPI descriptions so Open WebUI recognizes tools more naturally
 - refine the YTBot planner prompt so IMAP replies produce better project and issue hints
 - validate the exact YouTrack assignee-field behavior on the real tenant if `developers` needs a different identifier than the current login-style payload
+- validate fresh-thread tool recognition in Open WebUI using the new query/listing endpoints
 - define the first skill set for issue creation, worklog logging, and KB capture
-- test `POST /requests/ingest` and `POST /actions/preview` with real client-like inputs
+- test query/reporting endpoints with real client-like prompts from new chats
 - define the first real customer directory entries
 - add persistent thread-state storage for email clarification loops
 - connect the prompt and skill assets to the actual Open WebUI assistant configuration
+- rebuild and smoke-test the deployed container so the new panel UX is visible on `http://192.168.69.6:8086/panel`
+- add quick user actions in the panel if operations need faster enable/disable flows
 
 ## Repo Plan
 

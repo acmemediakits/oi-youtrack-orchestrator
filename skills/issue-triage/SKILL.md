@@ -27,7 +27,9 @@ When the source is an email, read the full body before deciding whether the requ
 
 ## Preferred tool sequence
 
-- Use `GET /projects` when project selection needs validation.
+- Use `GET /projects/search` when a customer or project hint must be matched.
+- Use `GET /projects` when you need the full raw project list.
+- Use `GET /issues/search` or `GET /projects/{project_id}/issues` to find the right existing issue before asking the user for an ID.
 - Use `GET /issues/{issue_id}` when the user references an existing issue.
 - Use `POST /issues/{issue_id}/edit` when the user wants to rename or rewrite an existing issue.
 - Use `POST /requests/ingest` for normalization and customer/project matching.
@@ -37,6 +39,7 @@ When the source is an email, read the full body before deciding whether the requ
 ## Decision rules
 
 - If an explicit issue ID exists, prefer update over create.
+- If the issue ID is missing but the likely issue can be found via search/listing, search before asking.
 - If the text describes a new problem/request and no issue ID is present, prefer create.
 - If the project is ambiguous, stop and ask.
 - Do not silently merge multiple client contexts into one issue.

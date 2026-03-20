@@ -31,6 +31,64 @@ Open points:
 - blockers, risks, or next steps
 ```
 
+## 2026-03-20 10:20
+
+Context:
+- The project had just gained runtime config separation, whitelist/RBAC, admin approval, and a minimal panel, but the documentation did not yet reflect the real operating model.
+- The panel also needed a client-presentable layout and actual user editing flow instead of a bare static form.
+
+Changes:
+- Refined the web panel UI into a branded, client-facing dashboard aligned with the Acme palette and links to `acmemk.com` and `chatnorris.it`.
+- Added real whitelist editing support: user rows now expose `Edit`, the form supports canonical email changes through `original_email`, and storage/repository helpers now support safe record replacement.
+- Reworked the panel layout to a one-column flow with metric cards under the header, `Whitelisted users` first, add/edit user in a modal, and collapsible runtime/secret sections.
+- Preserved the same backend safety model while improving the panel UX, and mirrored all relevant changes into `lada/`.
+- Updated `AI_GUIDE.md` and `README.md` so runtime/secrets split, RBAC, admin approval, panel routes, deploy notes, and current constraints are captured in repo memory.
+
+Verification:
+- Ran `python3 -m py_compile app/main.py app/services.py app/repositories.py app/storage.py lada/app/main.py lada/app/services.py lada/app/repositories.py lada/app/storage.py`.
+- Checked the live BrowserOS tab and confirmed the deployed container still shows the previous UI until rebuild/redeploy.
+- Reviewed `acmemk.com` in BrowserOS to align the panel palette with the current brand direction.
+
+Open points:
+- The deployed container still needs rebuild/restart before the new panel UI is visible on `192.168.69.6:8086`.
+- Quick user actions such as enable/disable or delete are still optional follow-up work.
+
+## 2026-03-19 11:40
+
+Context:
+- The backend needed the first full query layer so YTBot could search context autonomously instead of relying on highly structured user prompts.
+- We also needed to separate everyday email helpdesk assistance from explicit YouTrack execution.
+
+Changes:
+- Added query/search/reporting primitives for projects, issues, time tracking, articles, and assistant-oriented project context.
+- Added direct work item creation so Open WebUI no longer perceives a missing write tool when the issue is already known.
+- Added ranking and normalization logic for project search and issue search so fresh chats can discover relevant context with fewer user clarifications.
+- Updated prompts and skills to push the model toward `search first, ask later` behavior and to use assist-mode for noisy forwarded emails.
+- Extended the email planner schema with `workflow_mode` and `assist_intent`, so mailbox automation can summarize/translate/explain emails without creating YouTrack tickets by default.
+- Updated tests to cover project ranking, open issue listing, project time summaries, project context building, direct work item creation, and mail assist mode.
+
+Verification:
+- Planned verification path includes `python3 -m py_compile` on root and `lada`, plus runtime tests where dependencies are available.
+
+Open points:
+- Real-tenant validation is still needed for issue/article search query behavior and for the exact Open WebUI fresh-thread discoverability improvements.
+
+## 2026-03-19 12:05
+
+Context:
+- A live tenant error showed that assignee updates were still assuming the wrong custom field name (`Assignee`) even though the actual compatible field looked project-specific.
+
+Changes:
+- Updated assignee assignment to fetch issue custom fields dynamically and prefer compatible user/team fields exposed by the issue itself.
+- Kept configured field-name fallback, but now try real issue field candidates first so project-specific names like `ZD_SEA Team` can be used automatically.
+- Updated tests to reflect a tenant where the valid field is not named `Assignee`.
+
+Verification:
+- Planned verification path includes `py_compile` on root and `lada`, plus a live tenant retry on assignee application.
+
+Open points:
+- We still need one real execution to confirm the tenant accepts the detected field candidate with the configured login `acmemediakits`.
+
 ## 2026-03-17 17:45
 
 Context:

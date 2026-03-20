@@ -17,6 +17,12 @@ class RequestSource(str, Enum):
     manual = "manual"
 
 
+class UserType(str, Enum):
+    visitor = "visitor"
+    team = "team"
+    power = "power"
+
+
 class RequestStatus(str, Enum):
     ingested = "ingested"
     previewed = "previewed"
@@ -35,6 +41,15 @@ class ProjectCandidate(BaseModel):
     reason: str
 
 
+class ProjectSearchResult(BaseModel):
+    project_id: str
+    short_name: str
+    name: str
+    archived: bool = False
+    confidence: float = Field(ge=0, le=1)
+    reason: str
+
+
 class ProjectMatch(BaseModel):
     status: Literal["matched", "ambiguous", "unknown"]
     candidates: list[ProjectCandidate] = Field(default_factory=list)
@@ -48,6 +63,8 @@ class NormalizedRequest(BaseModel):
     source: RequestSource
     text: str
     sender: str | None = None
+    requester_email: str | None = None
+    requester_name: str | None = None
     subject: str | None = None
     customer_label: str | None = None
     urgency: Literal["low", "medium", "high"] = "medium"
@@ -79,6 +96,12 @@ class WorklogOperation(BaseModel):
     description: str
     work_date: date = Field(default_factory=date.today)
     needs_confirmation: bool = False
+
+
+class WorkItemCreateInput(BaseModel):
+    text: str
+    duration_minutes: int = Field(gt=0)
+    work_date: date = Field(default_factory=date.today)
 
 
 class KnowledgeOperation(BaseModel):
@@ -159,6 +182,81 @@ class WorkItemEditInput(BaseModel):
     work_date: date | None = None
 
 
+class IssueSearchResult(BaseModel):
+    issue_id: str
+    issue_id_readable: str
+    summary: str
+    project_id: str | None = None
+    project_short_name: str | None = None
+    project_name: str | None = None
+    state: str | None = None
+    assignee: str | None = None
+    resolved: bool = False
+    updated_at: datetime | None = None
+    url: str | None = None
+    score: float = Field(default=0.0, ge=0, le=1)
+    reason: str | None = None
+
+
+class ArticleSearchResult(BaseModel):
+    article_id: str
+    article_id_readable: str | None = None
+    summary: str
+    project_id: str | None = None
+    project_name: str | None = None
+    updated_at: datetime | None = None
+    url: str | None = None
+
+
+class TimeTrackingIssueSummary(BaseModel):
+    issue_id: str
+    issue_id_readable: str
+    summary: str
+    minutes: int = 0
+    hours: float = 0.0
+    issue_url: str | None = None
+
+
+class TimeTrackingAuthorSummary(BaseModel):
+    author: str
+    minutes: int = 0
+    hours: float = 0.0
+
+
+class TimeTrackingProjectSummary(BaseModel):
+    project_id: str
+    project_name: str | None = None
+    minutes: int = 0
+    hours: float = 0.0
+    issue_count: int = 0
+
+
+class TimeTrackingSummary(BaseModel):
+    project_id: str
+    project_name: str | None = None
+    date_from: date
+    date_to: date
+    total_minutes: int = 0
+    total_hours: float = 0.0
+    issue_breakdown: list[TimeTrackingIssueSummary] = Field(default_factory=list)
+    author_breakdown: list[TimeTrackingAuthorSummary] = Field(default_factory=list)
+
+
+class GlobalTimeTrackingSummary(BaseModel):
+    date_from: date
+    date_to: date
+    author_hint: str | None = None
+    total_minutes: int = 0
+    total_hours: float = 0.0
+    project_breakdown: list[TimeTrackingProjectSummary] = Field(default_factory=list)
+
+
+class AssistantProjectContext(BaseModel):
+    project: ProjectSearchResult
+    open_issues: list[IssueSearchResult] = Field(default_factory=list)
+    recent_articles: list[ArticleSearchResult] = Field(default_factory=list)
+
+
 class CustomerRule(BaseModel):
     customer_label: str
     aliases: list[str] = Field(default_factory=list)
@@ -201,13 +299,92 @@ class OpenWebUIReply(BaseModel):
 
 class MailExecutionPlan(BaseModel):
     request_text: str
+    workflow_mode: Literal["youtrack", "assist"] = "youtrack"
+    assist_intent: Literal["summarize", "translate", "explain", "extract_actions", "draft_reply", "classify_for_youtrack", "delegate", "time_report"] | None = None
+    admin_scope: bool = False
     customer_label: str | None = None
     project_hint: str | None = None
     project_id: str | None = None
     issue_summary: str | None = None
     issue_description: str | None = None
     issue_assignee: str | None = None
+    delegate_to_name: str | None = None
+    delegate_to_email: str | None = None
+    delegate_subject: str | None = None
+    delegate_body: str | None = None
+    report_date_from: date | None = None
+    report_date_to: date | None = None
+    report_group_by: Literal["project", "issue", "author"] | None = None
+    report_author_hint: str | None = None
     needs_clarification: bool = False
     clarification_question: str | None = None
     reply_intent: Literal["execute", "clarify", "ignore"] = "execute"
     reply_draft: str | None = None
+
+
+class IssueSubscription(BaseModel):
+    id: str = Field(default_factory=lambda: f"sub_{uuid4().hex}")
+    issue_id: str
+    issue_id_readable: str
+    summary: str
+    requester_email: str
+    requester_name: str | None = None
+    source_subject: str | None = None
+    state: str | None = None
+    assignee: str | None = None
+    resolved: bool = False
+    updated_at: datetime | None = None
+    worklog_count: int = 0
+    total_minutes: int = 0
+    last_worklog_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    last_notified_at: datetime | None = None
+
+
+class RuntimeMailboxFolders(BaseModel):
+    inbox: str = "INBOX"
+    processing: str = "PROCESSING"
+    processed: str = "PROCESSED"
+    failed: str = "FAILED"
+    rejected: str = "REJECTED"
+
+
+class RuntimeConfig(BaseModel):
+    id: str = "runtime"
+    verbose: bool = False
+    mailbox_poll_interval_seconds: int = Field(default=60, ge=10, le=86400)
+    mailbox_allowed_sender_domains: list[str] = Field(default_factory=list)
+    mailbox_folders: RuntimeMailboxFolders = Field(default_factory=RuntimeMailboxFolders)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class WhitelistedUser(BaseModel):
+    id: str = Field(default_factory=lambda: f"user_{uuid4().hex}")
+    full_name: str
+    email: str
+    youtrack_assignee_email: str | None = None
+    user_type: UserType = UserType.visitor
+    active: bool = True
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AdminApproval(BaseModel):
+    id: str = Field(default_factory=lambda: f"approval_{uuid4().hex}")
+    requester_email: str
+    requester_name: str | None = None
+    original_message_id: str
+    original_subject: str | None = None
+    token_hash: str
+    plan_payload: dict[str, Any]
+    message_payload: dict[str, Any]
+    expires_at: datetime
+    used_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class PanelStatus(BaseModel):
+    runtime_config: RuntimeConfig
+    users_total: int = 0
+    users_active: int = 0
+    secrets_status: dict[str, bool] = Field(default_factory=dict)

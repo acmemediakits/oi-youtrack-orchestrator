@@ -39,6 +39,12 @@ class JsonStore(Generic[T]):
         self._write_all(payload)
         return item
 
+    def delete(self, item_id: str) -> None:
+        payload = self._read_all()
+        if item_id in payload:
+            del payload[item_id]
+            self._write_all(payload)
+
     def list_all(self) -> list[T]:
         payload = self._read_all()
         return [self.model_cls.model_validate(item) for item in payload.values()]

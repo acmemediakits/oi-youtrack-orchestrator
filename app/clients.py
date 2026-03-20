@@ -78,12 +78,48 @@ class YouTrackClient:
             json_body=payload,
         )
 
+    async def list_issue_custom_fields(self, issue_id: str) -> list[dict[str, Any]]:
+        return await self._request(
+            "GET",
+            f"/api/issues/{issue_id}/customFields",
+            params={
+                "fields": (
+                    "id,name,$type,"
+                    "projectCustomField(id,field(id,name)),"
+                    "value(id,name,fullName,login,presentation,isResolved)"
+                )
+            },
+        )
+
+    async def update_issue_custom_field(self, issue_id: str, field_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/api/issues/{issue_id}/customFields/{field_id}",
+            params={"fields": "id,name,$type,value(id,name,fullName,login,presentation,isResolved)"},
+            json_body=payload,
+        )
+
     async def add_work_item(self, issue_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._request(
             "POST",
             f"/api/issues/{issue_id}/timeTracking/workItems",
             params={"fields": "id,duration(minutes),text,date"},
             json_body=payload,
+        )
+
+    async def search_issues(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        return await self._request(
+            "GET",
+            "/api/issues",
+            params={
+                "query": query,
+                "$top": limit,
+                "fields": (
+                    "id,idReadable,summary,resolved,updated,"
+                    "project(id,shortName,name,archived),"
+                    "customFields(name,value(name,fullName,login,presentation,isResolved))"
+                ),
+            },
         )
 
     async def create_article(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -94,11 +130,27 @@ class YouTrackClient:
             json_body=payload,
         )
 
+    async def search_articles(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        return await self._request(
+            "GET",
+            "/api/articles",
+            params={
+                "query": query,
+                "$top": limit,
+                "fields": "id,idReadable,summary,updated,project(id,name,shortName)",
+            },
+        )
+
     async def get_issue(self, issue_id: str) -> dict[str, Any]:
         return await self._request(
             "GET",
             f"/api/issues/{issue_id}",
-            params={"fields": "id,idReadable,summary,description,project(id,shortName,name)"},
+            params={
+                "fields": (
+                    "id,idReadable,summary,description,resolved,updated,project(id,shortName,name),"
+                    "customFields(name,$type,value(name,fullName,login,presentation,isResolved))"
+                )
+            },
         )
 
     async def list_issue_work_items(self, issue_id: str) -> list[dict[str, Any]]:
@@ -157,8 +209,18 @@ class OpenWebUIClient:
             logger.error("Open WebUI request failed: status=%s body=%s", response.status_code, response.text)
             raise RuntimeError(f"Open WebUI API error {response.status_code}: {response.text}")
         data = response.json()
-        choice = (data.get("choices") or [{}])[0]
+        if not isinstance(data, dict):
+            logger.error("Open WebUI returned non-object JSON payload: %r", data)
+            raise RuntimeError("Open WebUI returned an invalid JSON payload: expected an object.")
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            logger.error("Open WebUI returned an invalid choices payload: %s", data)
+            raise RuntimeError("Open WebUI returned an invalid response: missing choices[0].")
+        choice = choices[0]
         message = choice.get("message") or {}
+        if not isinstance(message, dict):
+            logger.error("Open WebUI returned an invalid message payload: %s", data)
+            raise RuntimeError("Open WebUI returned an invalid response: missing message object.")
         content = (message.get("content") or "").strip()
         finish_reason = choice.get("finish_reason")
         tool_calls = message.get("tool_calls") or []

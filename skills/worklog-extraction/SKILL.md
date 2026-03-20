@@ -36,7 +36,9 @@ When the input comes from email, read the full message and preserve the sender's
 
 ## Preferred tool sequence
 
+- Use `GET /projects/search` and `GET /issues/search` when the user gives only a project or issue hint.
 - Use `GET /issues/{issue_id}/work-items` when you need to inspect existing worklogs.
+- Use `POST /issues/{issue_id}/work-items` when the issue is known and the user wants to add a new worklog directly.
 - Use `POST /issues/{issue_id}/work-items/{item_id}/edit` when the user wants to correct an existing work item.
 - Use `POST /actions/preview` for free-form day-close notes.
 - Use `POST /requests/ingest` first if sender/customer normalization would improve project matching.
