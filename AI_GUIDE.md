@@ -38,6 +38,8 @@ Implemented today:
 - Open WebUI response parsing now fails explicitly on malformed `200` payloads instead of crashing on `NoneType.get`
 - runtime configuration is split from secrets/bootstrap settings
 - a minimal web control panel exists at `/panel/login` and `/panel`
+- panel presentation rendering is now separated from API orchestration through a dedicated `app/presentation/` layer instead of inline HTML/CSS inside `main.py`
+- the `lada/` mirror should stay aligned with root code and presentation-layer changes whenever deployment-facing files are updated locally
 - runtime settings are editable from JSON-backed storage in `data/`
 - whitelist users now include canonical email, full name, assignee fallback email, role, and active state
 - RBAC is active for `visitor`, `team`, and `power` users
@@ -46,6 +48,7 @@ Implemented today:
 - the panel now exposes recent application logs for operational debugging
 - IMAP startup now ensures runtime folders on boot and finalizes duplicate messages instead of re-reading the same unseen email forever
 - Aurora confirms the runtime IMAP folders are real and subscribed; Roundcube appears to have a client-specific visibility limitation for those folders
+- Open WebUI chat and mailbox execution are now explicitly separate trust channels: chat can run through a trusted assistant actor without `X-Actor-Email`, while email keeps whitelist, anti-spoofing guardrails, and admin approval rules
 - root changes are mirrored in `lada/` so deployment and local source stay aligned
 
 Not yet complete:
@@ -60,6 +63,7 @@ Not yet complete:
 - reusable skills and prompt assets for YouTrack, mailbox triage, and daily closing flows
 - persistent mailbox thread-state storage beyond visible quoted text
 - production auth/rate limiting on the local API
+- a clearer channel policy for trusted Open WebUI chat versus stricter mailbox-originated execution
 - robust error taxonomy and retry logic
 - panel actions beyond edit/upsert, such as quick enable/disable or delete with confirmation
 - live runtime validation of the refreshed panel after container rebuild on the deployed host
@@ -250,6 +254,7 @@ Success criteria:
 - optimize for solo-work practicality over enterprise complexity
 - for mailbox automation, prefer a planner/executor split: model decides, backend executes
 - keep `.env` limited to secrets/bootstrap values, and keep mutable runtime settings in JSON-backed storage
+- keep chat/OI trust separate from mailbox trust: the Open WebUI tool channel may use a configured trusted assistant actor, but mailbox flows must keep sender-domain checks, spoofing resistance, and approval gates
 - when debugging mailbox behavior, trust server/runtime logs and cross-check with more than one mail client before blaming backend state
 - after every relevant code change, update `AI_GUIDE.md` and `WORKLOG_AI.md`
 

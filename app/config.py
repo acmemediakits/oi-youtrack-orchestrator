@@ -5,6 +5,16 @@ import ssl
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.models import UserType
+
+
+def _env_user_type(name: str, default: UserType) -> UserType:
+    raw_value = os.getenv(name, default.value).strip().lower()
+    try:
+        return UserType(raw_value)
+    except ValueError:
+        return default
+
 
 @dataclass(slots=True)
 class Settings:
@@ -52,6 +62,10 @@ class Settings:
     openwebui_api_token: str = os.getenv("OPENWEBUI_API_TOKEN", "")
     openwebui_model_id: str = os.getenv("OPENWEBUI_MODEL_ID", "YTbot")
     openwebui_timeout_seconds: int = int(os.getenv("OPENWEBUI_TIMEOUT_SECONDS", "120"))
+    openwebui_trusted_channel_enabled: bool = os.getenv("OPENWEBUI_TRUSTED_CHANNEL_ENABLED", "true").lower() == "true"
+    openwebui_trusted_actor_email: str = os.getenv("OPENWEBUI_TRUSTED_ACTOR_EMAIL", "ytbot@local")
+    openwebui_trusted_actor_name: str = os.getenv("OPENWEBUI_TRUSTED_ACTOR_NAME", "YTbot")
+    openwebui_trusted_actor_role: UserType = _env_user_type("OPENWEBUI_TRUSTED_ACTOR_ROLE", UserType.power)
 
     def build_imap_ssl_context(self) -> ssl.SSLContext:
         context = ssl.create_default_context()

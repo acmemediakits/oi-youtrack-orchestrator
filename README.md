@@ -55,7 +55,9 @@ L'OpenAPI sarà disponibile su `/openapi.json`, direttamente riusabile come tool
 - `visitor`: puo' creare task, ricevere update e modificare solo task propri entro 30 minuti
 - `team`: come visitor, ma puo' anche vedere task aperti e progetti non archiviati
 - `power`: accesso avanzato via OI/API a report tempi, query avanzate, KB read/write e endpoint avanzati
-- enforcement API: usa header `X-Actor-Email`
+- canale Open WebUI/chat: se `OPENWEBUI_TRUSTED_CHANNEL_ENABLED=true`, gli endpoint tool possono girare senza `X-Actor-Email` e usano un actor trusted dedicato configurabile via `.env`
+- enforcement API utente: se arriva `X-Actor-Email`, il backend continua a usare whitelist e RBAC reali
+- canale email: resta separato dal chatbot e continua ad applicare whitelist domini mittenti, planner guardrails e approval `admin_scope`
 - richieste email classificate `admin_scope`: non vengono eseguite subito, ma richiedono approvazione del `SUPER_ADMIN_EMAIL` tramite token temporaneo con TTL 30 minuti
 
 ## Endpoints
@@ -105,6 +107,7 @@ docker logs acme_youtrack_api --tail=100
 
 - Il parsing mail/planner non e' piu' regex-first: il modello decide la struttura, ma il backend mantiene i guardrail.
 - Open WebUI può usare il backend come tool OpenAPI e lasciare al modello il compito di produrre testo/decisioni.
+- Il canale Open WebUI/chat e il canale mailbox sono intenzionalmente separati: la chat gira in trusted assistant mode configurabile, mentre le email restano soggette a controlli anti-spoofing e anti-injection.
 - Il backend ora espone sia tool di scrittura sia tool di ricerca/listing, così l'assistente può cercare contesto prima di chiedere dettagli all'utente.
 - La lettura IMAP è supportata via servizio dedicato e può girare in polling automatico.
 - In fase di startup il backend prova anche ad assicurare le cartelle runtime IMAP (`PROCESSING`, `PROCESSED`, `FAILED`, `REJECTED`) e a sottoscriverle.

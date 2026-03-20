@@ -31,6 +31,61 @@ Open points:
 - blockers, risks, or next steps
 ```
 
+## 2026-03-20 18:20
+
+Context:
+- The latest trusted-channel and presentation-layer refactors needed to be mirrored into the mounted `lada/` deployment workspace and the local repository needed a cleanup pass before commit.
+
+Changes:
+- Synced the updated environment example, documentation, trusted Open WebUI channel changes, presentation-layer files, and focused auth test into `lada/`.
+- Recorded the rule that `lada/` must stay aligned with root presentation/orchestration changes in project memory.
+- Identified macOS metadata artifacts (`.DS_Store` and `._*`) in the local workspace so they can be removed before committing.
+
+Verification:
+- Confirmed the mirrored `lada/app/main.py` imports `app.presentation.panel_views`.
+- Confirmed the mirrored `lada/` tree contains the new `app/presentation/` package and `tests/test_api_auth.py`.
+
+Open points:
+- Remove the local macOS metadata files before creating the commit.
+- Commit and push the current project state after cleanup.
+
+## 2026-03-20 17:58
+
+Context:
+- Open WebUI chat calls were failing with `401 Missing X-Actor-Email header`, which mixed user-facing OI chat with the stricter mailbox trust model.
+- The architecture needed an explicit split between trusted chatbot execution and guarded email execution.
+
+Changes:
+- Added a configurable trusted Open WebUI actor path so chat/tool calls can run without `X-Actor-Email` when `OPENWEBUI_TRUSTED_CHANNEL_ENABLED=true`.
+- Kept whitelist/RBAC behavior intact whenever `X-Actor-Email` is explicitly provided, so user-scoped API calls still use the real directory.
+- Prevented the trusted chat actor from being persisted as an issue subscription requester during commit flows.
+- Documented the channel split in `.env.example`, `README.md`, and `AI_GUIDE.md`.
+- Added targeted tests for trusted actor fallback, disabled-mode `401`, and explicit-header whitelist resolution.
+
+Verification:
+- Ran `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m py_compile app/config.py app/main.py app/models.py tests/test_api_auth.py`.
+- Attempted `python3 -m unittest tests.test_api_auth`, but this environment does not currently have `fastapi` installed, so import-based API tests could not run here.
+
+Open points:
+- A live Open WebUI retest is still needed to confirm the assistant no longer asks the user for YouTrack email/header context during normal chat usage.
+- If the API is exposed beyond the trusted OI environment, the trusted channel toggle must stay deliberate and deployment-specific.
+
+## 2026-03-20 18:12
+
+Context:
+- `app/main.py` had accumulated inline panel HTML/CSS rendering, which mixed presentation concerns with FastAPI orchestration and made the module harder to evolve.
+
+Changes:
+- Introduced an enterprise-style presentation layer under `app/presentation/`.
+- Moved panel rendering helpers and inline styling into `app/presentation/panel_views.py`.
+- Kept `app/main.py` focused on routing, auth, orchestration, and response wiring by importing `render_login_page` and `render_panel`.
+
+Verification:
+- Planned verification is syntax/import validation after the refactor plus a quick runtime panel smoke test.
+
+Open points:
+- The panel still uses string-based HTML rendering; if the UI grows further, a next step could be moving from presentation helpers to actual template files under the same presentation layer.
+
 ## 2026-03-20 15:05
 
 Context:
