@@ -49,6 +49,8 @@ Read the entire email, understand what the sender is asking, decide whether it i
 - Do not rely only on the subject line.
 - Do not ignore quoted or lower sections if they contain the actual task details.
 - If multiple requests exist in the same email, keep them separate in your internal reasoning and tool usage.
+- If the email contains a ticket request written as an instruction, strip the wrapper command from the final issue title and description.
+- If the sender already provides a good explicit title plus separate descriptive detail, preserve that structure instead of echoing the whole sentence into the title.
 - If the sender provides explicit wording for a comment or worklog text, preserve that wording.
 - If you need clarification, ask one compact question rather than a long questionnaire.
 - If the email asks for a summary, explanation, translation, or action extraction, default to helpdesk assistance and do not create a ticket unless explicitly asked.

@@ -50,6 +50,17 @@ class ProjectSearchResult(BaseModel):
     reason: str
 
 
+class ProjectMetadata(BaseModel):
+    project_id: str
+    short_name: str
+    name: str
+    archived: bool = False
+    aliases: list[str] = Field(default_factory=list)
+    domains: list[str] = Field(default_factory=list)
+    default_for_customer: str | None = None
+    reason: str | None = None
+
+
 class ProjectMatch(BaseModel):
     status: Literal["matched", "ambiguous", "unknown"]
     candidates: list[ProjectCandidate] = Field(default_factory=list)
@@ -176,6 +187,14 @@ class IssueEditInput(BaseModel):
     description: str | None = None
 
 
+class IssueAssigneeInput(BaseModel):
+    assignee: str
+
+
+class IssueStateInput(BaseModel):
+    state: str
+
+
 class WorkItemEditInput(BaseModel):
     text: str | None = None
     duration_minutes: int | None = Field(default=None, gt=0)
@@ -255,6 +274,47 @@ class AssistantProjectContext(BaseModel):
     project: ProjectSearchResult
     open_issues: list[IssueSearchResult] = Field(default_factory=list)
     recent_articles: list[ArticleSearchResult] = Field(default_factory=list)
+
+
+class IssueFieldOption(BaseModel):
+    id: str | None = None
+    name: str
+    presentation: str | None = None
+    login: str | None = None
+    full_name: str | None = None
+    email: str | None = None
+    score: float | None = Field(default=None, ge=0, le=1)
+    reason: str | None = None
+
+
+class IssueFieldMetadata(BaseModel):
+    id: str
+    name: str
+    field_type: str
+    current_value: Any = None
+    can_be_empty: bool | None = None
+    possible_values: list[IssueFieldOption] = Field(default_factory=list)
+    possible_events: list[IssueFieldOption] = Field(default_factory=list)
+
+
+class ResolveValueInput(BaseModel):
+    type: Literal["status", "transition", "assignee", "issue_field", "priority"]
+    input: str
+    project_id: str | None = None
+    issue_id: str | None = None
+    field_name: str | None = None
+
+
+class ResolveValueResult(BaseModel):
+    type: str
+    input: str
+    issue_id: str | None = None
+    project_id: str | None = None
+    field_name: str | None = None
+    selected: IssueFieldOption | None = None
+    candidates: list[IssueFieldOption] = Field(default_factory=list)
+    ambiguous: bool = False
+    needs_clarification: bool = False
 
 
 class CustomerRule(BaseModel):

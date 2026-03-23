@@ -35,11 +35,18 @@ from app.models import (
     CommitResult,
     GlobalTimeTrackingSummary,
     IngestRequestInput,
+    IssueAssigneeInput,
+    IssueFieldOption,
+    IssueFieldMetadata,
     IssueEditInput,
+    IssueStateInput,
     IssueSearchResult,
     MailProcessingRecord,
     MailboxMessage,
     NormalizedRequest,
+    ProjectMetadata,
+    ResolveValueInput,
+    ResolveValueResult,
     RuntimeMailboxFolders,
     PreviewInput,
     ProjectSearchResult,
@@ -372,6 +379,27 @@ async def search_projects(
 
 
 @app.get(
+    "/projects/{project_id}",
+    summary="Get project metadata",
+    description="Read project metadata and local alias/domain enrichment for a single YouTrack project.",
+    response_model=ProjectMetadata,
+)
+async def get_project_metadata(project_id: str, x_actor_email: str | None = Header(default=None)) -> ProjectMetadata:
+    actor = _resolve_actor(x_actor_email)
+    _assert_capability(actor, "view_non_archived_projects")
+    service = get_query_service()
+    try:
+        metadata = await service.get_project_metadata(project_id)
+        if not metadata:
+            raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
+        return metadata
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get(
     "/issues/{issue_id}",
     summary="Get issue details",
     description="Read an existing YouTrack issue by issue ID or readable ID such as ES-40.",
@@ -409,6 +437,76 @@ async def edit_issue(issue_id: str, payload: IssueEditInput, x_actor_email: str 
             **response,
             "url": client.issue_url(response.get("idReadable") or response.get("id") or issue_id),
         }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get(
+    "/issues/{issue_id}/fields",
+    summary="List issue fields metadata",
+    description="Return custom fields and available options for an issue so the assistant can inspect legal values before writing.",
+    response_model=list[IssueFieldMetadata],
+)
+async def list_issue_fields(issue_id: str, x_actor_email: str | None = Header(default=None)) -> list[IssueFieldMetadata]:
+    actor = _resolve_actor(x_actor_email)
+    _assert_capability(actor, "advanced_reads")
+    service = get_commit_service()
+    try:
+        return await service.list_issue_fields(issue_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get(
+    "/issues/{issue_id}/transitions",
+    summary="List available issue transitions",
+    description="Return available state-machine transitions/events for an issue.",
+    response_model=list[IssueFieldOption],
+)
+async def list_issue_transitions(issue_id: str, x_actor_email: str | None = Header(default=None)) -> list[IssueFieldOption]:
+    actor = _resolve_actor(x_actor_email)
+    _assert_capability(actor, "assist_mail")
+    service = get_commit_service()
+    try:
+        return await service.list_issue_transitions(issue_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post(
+    "/issues/{issue_id}/assignee",
+    summary="Assign an issue",
+    description="Assign an existing issue to a user/team label such as `developers` using the real issue custom-field metadata.",
+)
+async def assign_issue(issue_id: str, payload: IssueAssigneeInput, x_actor_email: str | None = Header(default=None)) -> dict:
+    actor = _resolve_actor(x_actor_email)
+    if actor.user_type == UserType.visitor:
+        _assert_issue_edit_allowed(actor, issue_id)
+    else:
+        _assert_capability(actor, "assist_mail")
+    service = get_commit_service()
+    try:
+        return await service.assign_issue_by_id(issue_id, payload.assignee)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post(
+    "/issues/{issue_id}/state",
+    summary="Update issue state",
+    description="Resolve and apply a state value or transition to an existing issue using issue metadata.",
+)
+async def update_issue_state(issue_id: str, payload: IssueStateInput, x_actor_email: str | None = Header(default=None)) -> dict:
+    actor = _resolve_actor(x_actor_email)
+    if actor.user_type == UserType.visitor:
+        _assert_issue_edit_allowed(actor, issue_id)
+    else:
+        _assert_capability(actor, "assist_mail")
+    service = get_commit_service()
+    try:
+        return await service.update_issue_state_by_id(issue_id, payload.state)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -724,6 +822,30 @@ async def run_mail_polling_cycle() -> list[MailProcessingRecord]:
     service = get_mail_automation_service()
     try:
         return await service.run_once()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post(
+    "/resolve-value",
+    summary="Resolve a metadata value",
+    description="Resolve natural-language input like assignee, status, transition, or priority into legal issue/project metadata values before write operations.",
+    response_model=ResolveValueResult,
+)
+async def resolve_value(payload: ResolveValueInput, x_actor_email: str | None = Header(default=None)) -> ResolveValueResult:
+    actor = _resolve_actor(x_actor_email)
+    _assert_capability(actor, "assist_mail")
+    service = get_commit_service()
+    try:
+        return await service.resolve_value(
+            value_type=payload.type,
+            raw_input=payload.input,
+            project_id=payload.project_id,
+            issue_id=payload.issue_id,
+            field_name=payload.field_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

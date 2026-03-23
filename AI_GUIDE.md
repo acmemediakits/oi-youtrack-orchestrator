@@ -49,6 +49,10 @@ Implemented today:
 - IMAP startup now ensures runtime folders on boot and finalizes duplicate messages instead of re-reading the same unseen email forever
 - Aurora confirms the runtime IMAP folders are real and subscribed; Roundcube appears to have a client-specific visibility limitation for those folders
 - Open WebUI chat and mailbox execution are now explicitly separate trust channels: chat can run through a trusted assistant actor without `X-Actor-Email`, while email keeps whitelist, anti-spoofing guardrails, and admin approval rules
+- runtime settings panel saves now avoid the `logging`-related server crash seen when toggling values such as `VERBOSE`
+- clarification replies now embed explicit operational context and the SMTP reply path preserves thread headers/body context so follow-up emails carry more recoverable history
+- long-term mailbox thread memory is now tracked as a planned feature in `PLANNING_FEATURES.md`, separate from resolved bug fixes
+- the OpenAPI surface now explicitly exposes project metadata, issue fields, issue transitions, direct issue assignee updates, direct issue state updates, and a generic `resolve-value` endpoint so the model can inspect/write metadata more safely
 - root changes are mirrored in `lada/` so deployment and local source stay aligned
 
 Not yet complete:
@@ -68,6 +72,8 @@ Not yet complete:
 - panel actions beyond edit/upsert, such as quick enable/disable or delete with confirmation
 - live runtime validation of the refreshed panel after container rebuild on the deployed host
 - a documented operator workaround or UI note for Roundcube folder visibility differences versus Aurora
+- stronger persistent thread-state storage beyond quoted email context; current clarification improvement is transport-level, not full conversation memory
+- richer direct Knowledge Base write/read/update endpoints are still incomplete even after the OpenAPI surface expansion
 
 ## Target Outcomes
 

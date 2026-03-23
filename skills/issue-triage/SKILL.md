@@ -25,6 +25,14 @@ When the source is an email, read the full body before deciding whether the requ
    - any open questions
 5. Commit only when the preview is safe or explicitly approved.
 
+## Issue drafting rules
+
+- Treat wrapper phrases such as `crea issue`, `apri ticket`, `nel progetto`, and `con descrizione` as operator instructions, not issue content.
+- If the user already gives a title in quotes and a separate description, preserve them as two different fields.
+- The final issue `summary` must be a real title, not a paraphrase of the whole command.
+- The final issue `description` should capture the requested work, constraints, and acceptance detail without copying the wrapper sentence.
+- If the generated preview contains a title that starts with `crea`, `apri`, `genera`, or contains `con descrizione`, stop and rewrite it before commit.
+
 ## Preferred tool sequence
 
 - Use `GET /projects/search` when a customer or project hint must be matched.

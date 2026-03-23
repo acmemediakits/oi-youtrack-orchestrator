@@ -8,10 +8,11 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import settings
+from app.mailbox import MailboxService
 from app.models import CommitInput, IngestRequestInput, MailExecutionPlan, MailProcessingRecord, MailboxMessage, OpenWebUIReply, PreviewInput, RequestSource, RuntimeMailboxFolders, UserType
 from app.mail_agent import MailAutomationService
 from app.repositories import AdminApprovalRepository, CommitRepository, CustomerDirectoryRepository, IssueSubscriptionRepository, MailProcessingRepository, PreviewRepository, RequestRepository, RuntimeConfigRepository, UserDirectoryRepository
-from app.services import AdminApprovalService, CommitService, IssueSubscriptionService, PermissionService, PreviewService, ProjectMatcher, QueryService, RequestService, RuntimeConfigService, UserDirectoryService
+from app.services import AdminApprovalService, CommitService, IssueSubscriptionService, PermissionService, PreviewService, ProjectMatcher, QueryService, RequestService, RuntimeConfigService, UserDirectoryService, extract_issue_reference
 
 
 class FakeYouTrackClient:
@@ -23,6 +24,30 @@ class FakeYouTrackClient:
         self.updated_issue_payloads = []
         self.updated_issue_custom_field_payloads = []
         self.created_work_item_payloads = []
+        self.fail_issue_custom_field_ids = set()
+        self.user_bundles = {
+            "bundle-assignee-sea": {
+                "id": "bundle-assignee-sea",
+                "aggregatedUsers": [
+                    {
+                        "id": "user-dev",
+                        "name": "developers",
+                        "fullName": "developers",
+                        "login": "acmemediakits",
+                        "email": "developers@acmemk.com",
+                    },
+                    {
+                        "id": "user-acme",
+                        "name": "Acme",
+                        "fullName": "Acme",
+                        "login": "acme",
+                        "email": "acquisti@acmemk.com",
+                    },
+                ],
+                "individuals": [],
+                "groups": [{"id": "group-ep-team", "name": "EP-Projects Team", "presentation": "EP-Projects Team"}],
+            }
+        }
         self.issue_details = {
             "SEA-1": {
                 "id": "issue_1",
@@ -31,7 +56,17 @@ class FakeYouTrackClient:
                 "resolved": False,
                 "updated": 1741824000000,
                 "customFields": [
-                    {"id": "field-assignee-sea", "name": "ZD_SEA Team", "$type": "SingleUserIssueCustomField", "value": {"login": "acmemediakits", "fullName": "developers"}},
+                    {
+                        "id": "field-assignee-sea",
+                        "name": "ZD_SEA Team",
+                        "$type": "SingleUserIssueCustomField",
+                        "value": {"id": "user-dev", "login": "acmemediakits", "fullName": "developers", "name": "developers"},
+                        "projectCustomField": {
+                            "canBeEmpty": True,
+                            "field": {"id": "field-base-assignee", "name": "ZD_SEA Team"},
+                            "bundle": {"id": "bundle-assignee-sea"},
+                        },
+                    },
                     {"id": "field-state-sea", "name": "State", "$type": "StateIssueCustomField", "value": {"name": "Open", "isResolved": False}},
                 ],
             }
@@ -69,7 +104,17 @@ class FakeYouTrackClient:
             "resolved": False,
             "updated": 1741824000000,
             "customFields": [
-                {"id": "field-assignee-sea", "name": "ZD_SEA Team", "$type": "SingleUserIssueCustomField", "value": None},
+                {
+                    "id": "field-assignee-sea",
+                    "name": "ZD_SEA Team",
+                    "$type": "SingleUserIssueCustomField",
+                    "value": None,
+                    "projectCustomField": {
+                        "canBeEmpty": True,
+                        "field": {"id": "field-base-assignee", "name": "ZD_SEA Team"},
+                        "bundle": {"id": "bundle-assignee-sea"},
+                    },
+                },
                 {"id": "field-state-sea", "name": "State", "$type": "StateIssueCustomField", "value": {"name": "Open", "isResolved": False}},
             ],
         }
@@ -117,7 +162,17 @@ class FakeYouTrackClient:
                 "resolved": False,
                 "updated": 1741824000000,
                 "customFields": [
-                    {"id": "field-assignee-sea", "name": "ZD_SEA Team", "$type": "SingleUserIssueCustomField", "value": None},
+                    {
+                        "id": "field-assignee-sea",
+                        "name": "ZD_SEA Team",
+                        "$type": "SingleUserIssueCustomField",
+                        "value": None,
+                        "projectCustomField": {
+                            "canBeEmpty": True,
+                            "field": {"id": "field-base-assignee", "name": "ZD_SEA Team"},
+                            "bundle": {"id": "bundle-assignee-sea"},
+                        },
+                    },
                     {"id": "field-state-sea", "name": "State", "$type": "StateIssueCustomField", "value": {"name": "Open", "isResolved": False}},
                 ],
             },
@@ -129,6 +184,8 @@ class FakeYouTrackClient:
 
     async def update_issue_custom_field(self, issue_id, field_id, payload):
         self.updated_issue_custom_field_payloads.append((issue_id, field_id, payload))
+        if field_id in self.fail_issue_custom_field_ids:
+            raise RuntimeError(f"Rejected field {field_id}")
         details = self.issue_details.setdefault(
             issue_id,
             {"id": issue_id, "idReadable": issue_id, "summary": issue_id, "resolved": False, "updated": 1741824000000, "customFields": []},
@@ -138,6 +195,19 @@ class FakeYouTrackClient:
                 field["value"] = payload.get("value")
                 return {"id": field_id, "name": field.get("name"), "$type": field.get("$type"), "value": field.get("value")}
         raise RuntimeError(f"Unknown field {field_id}")
+
+    async def get_issue_custom_field(self, issue_id, field_id):
+        details = await self.get_issue(issue_id)
+        for field in details.get("customFields", []):
+            if field.get("id") == field_id:
+                return field
+        raise RuntimeError(f"Unknown field {field_id}")
+
+    async def get_user_bundle(self, bundle_id):
+        return self.user_bundles.get(bundle_id, {"id": bundle_id, "aggregatedUsers": [], "individuals": [], "groups": []})
+
+    async def apply_command(self, issue_id, query):
+        return {"id": "cmd_1", "query": query, "issues": [{"idReadable": issue_id}]}
 
     async def list_issue_work_items(self, issue_id):
         return self.issue_work_items.get(
@@ -377,6 +447,35 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview.issue_operations[0].summary, "supporto e debug")
         self.assertFalse(preview.requires_confirmation)
 
+    def test_extract_issue_reference_accepts_project_keys_with_underscore(self):
+        self.assertEqual(extract_issue_reference("assegna EP_PL-11 al team developers"), "EP_PL-11")
+
+    def test_preview_recognizes_existing_issue_reference_with_underscore(self):
+        preview = self.preview_service.build_preview(
+            PreviewInput(text="bug su EP_PL-11, assegna developers", project_id="0-9")
+        )
+        self.assertEqual(len(preview.issue_operations), 1)
+        self.assertEqual(preview.issue_operations[0].action, "update")
+        self.assertEqual(preview.issue_operations[0].issue_id, "EP_PL-11")
+
+    def test_preview_extracts_explicit_issue_title_and_description(self):
+        preview = self.preview_service.build_preview(
+            PreviewInput(
+                text=(
+                    'crea un nuovo issue: "Gestione avanzata permessi" nel progetto EP-Projects '
+                    'con descrizione: "Implementare una gestione avanzata dei permessi utente '
+                    'per permettere configurazioni piu granulari basate su ruoli."'
+                ),
+                project_id="EP",
+            )
+        )
+        self.assertEqual(len(preview.issue_operations), 1)
+        operation = preview.issue_operations[0]
+        self.assertEqual(operation.summary, "Gestione avanzata permessi")
+        self.assertTrue(operation.description.startswith("Implementare una gestione avanzata"))
+        self.assertNotIn("crea un nuovo issue", operation.summary.lower())
+        self.assertNotIn("con descrizione", operation.summary.lower())
+
     def test_runtime_config_service_persists_editable_settings(self):
         config = self.runtime_config_service.update(
             verbose=True,
@@ -393,6 +492,167 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(config.verbose)
         self.assertEqual(config.mailbox_poll_interval_seconds, 120)
         self.assertEqual(config.mailbox_folders.processed, "DONE")
+
+    def test_runtime_config_service_update_can_toggle_verbose_without_crashing(self):
+        config = self.runtime_config_service.update(verbose=False)
+        self.assertFalse(config.verbose)
+
+    def test_mail_plan_normalization_strips_wrapper_from_issue_text(self):
+        service = MailAutomationService(
+            mailbox=FakeMailboxService([]),
+            openwebui=FakeOpenWebUIClient(),
+            processed=self.mail_processing,
+            request_service=self.request_service,
+            preview_service=self.preview_service,
+            commit_service=self.commit_service,
+            youtrack_client=self.youtrack_client,
+            query_service=self.query_service,
+            issue_subscription_service=IssueSubscriptionService(self.issue_subscriptions, self.youtrack_client, FakeMailboxService([])),
+        )
+        message = MailboxMessage(
+            message_id="m-normalize",
+            mailbox_uid="10",
+            sender="ops@trusted.example",
+            subject="Nuovo task",
+            text="Serve creare un task sui permessi.",
+            received_at=datetime.now(timezone.utc),
+        )
+        plan = MailExecutionPlan(
+            request_text=(
+                'crea un nuovo issue: "Gestione avanzata permessi" nel progetto EP-Projects '
+                'con descrizione: "Implementare una gestione avanzata dei permessi utente."'
+            ),
+            workflow_mode="youtrack",
+            issue_summary='crea un nuovo issue: "Gestione avanzata permessi" nel progetto EP-Projects con descrizione',
+            issue_description='descrizione: "Implementare una gestione avanzata dei permessi utente."',
+            reply_intent="execute",
+        )
+        normalized = service._normalize_execution_plan(message, plan)
+        self.assertEqual(normalized.issue_summary, "Gestione avanzata permessi")
+        self.assertEqual(normalized.issue_description, "Implementare una gestione avanzata dei permessi utente.")
+
+    async def test_assign_issue_prefers_exact_configured_field_name(self):
+        previous_field_name = settings.youtrack_assignee_field_name
+        previous_assignee = settings.youtrack_default_assignee
+        previous_login = settings.youtrack_default_assignee_login
+        settings.youtrack_assignee_field_name = "ZD_SEA Team"
+        settings.youtrack_default_assignee = "developers"
+        settings.youtrack_default_assignee_login = "acmemediakits"
+        self.youtrack_client.issue_details["SEA-1"]["customFields"] = [
+            {"id": "field-reviewer", "name": "Reviewer", "$type": "SingleUserIssueCustomField", "value": None},
+            {
+                "id": "field-assignee-sea",
+                "name": "ZD_SEA Team",
+                "$type": "SingleUserIssueCustomField",
+                "value": None,
+                "projectCustomField": {
+                    "canBeEmpty": True,
+                    "field": {"id": "field-base-assignee", "name": "ZD_SEA Team"},
+                    "bundle": {"id": "bundle-assignee-sea"},
+                },
+            },
+        ]
+        try:
+            error = await self.commit_service._assign_issue({"idReadable": "SEA-1"}, "developers")
+            self.assertIsNone(error)
+            self.assertTrue(self.youtrack_client.updated_issue_custom_field_payloads)
+            issue_id, field_id, payload = self.youtrack_client.updated_issue_custom_field_payloads[0]
+            self.assertEqual(issue_id, "SEA-1")
+            self.assertEqual(field_id, "field-assignee-sea")
+            self.assertEqual(payload["value"]["id"], "user-dev")
+        finally:
+            settings.youtrack_assignee_field_name = previous_field_name
+            settings.youtrack_default_assignee = previous_assignee
+            settings.youtrack_default_assignee_login = previous_login
+
+    async def test_assign_issue_does_not_fallback_to_lower_priority_user_fields(self):
+        previous_field_name = settings.youtrack_assignee_field_name
+        previous_assignee = settings.youtrack_default_assignee
+        previous_login = settings.youtrack_default_assignee_login
+        settings.youtrack_assignee_field_name = "ZD_SEA Team"
+        settings.youtrack_default_assignee = "developers"
+        settings.youtrack_default_assignee_login = "acmemediakits"
+        self.youtrack_client.issue_details["SEA-1"]["customFields"] = [
+            {"id": "field-reviewer", "name": "Reviewer", "$type": "SingleUserIssueCustomField", "value": None},
+            {
+                "id": "field-assignee-sea",
+                "name": "ZD_SEA Team",
+                "$type": "SingleUserIssueCustomField",
+                "value": None,
+                "projectCustomField": {
+                    "canBeEmpty": True,
+                    "field": {"id": "field-base-assignee", "name": "ZD_SEA Team"},
+                    "bundle": {"id": "bundle-assignee-sea"},
+                },
+            },
+        ]
+        self.youtrack_client.fail_issue_custom_field_ids = {"field-assignee-sea"}
+        try:
+            error = await self.commit_service._assign_issue({"idReadable": "SEA-1"}, "developers")
+            self.assertIsNotNone(error)
+            attempted_field_ids = [field_id for _, field_id, _ in self.youtrack_client.updated_issue_custom_field_payloads]
+            self.assertEqual(attempted_field_ids, ["field-assignee-sea"])
+            self.assertIn("Attempted fields: ZD_SEA Team", error or "")
+        finally:
+            self.youtrack_client.fail_issue_custom_field_ids = set()
+            settings.youtrack_assignee_field_name = previous_field_name
+            settings.youtrack_default_assignee = previous_assignee
+            settings.youtrack_default_assignee_login = previous_login
+
+    async def test_commit_update_issue_can_apply_assignee(self):
+        previous_field_name = settings.youtrack_assignee_field_name
+        previous_assignee = settings.youtrack_default_assignee
+        previous_login = settings.youtrack_default_assignee_login
+        settings.youtrack_assignee_field_name = "ZD_SEA Team"
+        settings.youtrack_default_assignee = "developers"
+        settings.youtrack_default_assignee_login = "acmemediakits"
+        self.youtrack_client.issue_details["EP_PL-11"] = {
+            "id": "2-712",
+            "idReadable": "EP_PL-11",
+            "summary": "Gestione avanzata permessi",
+            "resolved": False,
+            "updated": 1741824000000,
+            "customFields": [
+                {
+                    "id": "field-assignee-ep",
+                    "name": "Assignee",
+                    "$type": "SingleUserIssueCustomField",
+                    "value": None,
+                    "projectCustomField": {
+                        "canBeEmpty": True,
+                        "field": {"id": "field-base-assignee", "name": "Assignee"},
+                        "bundle": {"id": "bundle-assignee-sea"},
+                    },
+                },
+            ],
+        }
+        preview = self.preview_service.build_preview(
+            PreviewInput(text="bug su EP_PL-11, assegna developers", project_id="0-9")
+        )
+        try:
+            result = await self.commit_service.commit(CommitInput(preview_id=preview.preview_id, confirm=True))
+            self.assertIn(result.status, {"success", "partial_success"})
+            self.assertTrue(self.youtrack_client.updated_issue_custom_field_payloads)
+            issue_id, field_id, payload = self.youtrack_client.updated_issue_custom_field_payloads[-1]
+            self.assertEqual(issue_id, "EP_PL-11")
+            self.assertEqual(field_id, "field-assignee-ep")
+            self.assertEqual(payload["value"]["id"], "user-dev")
+        finally:
+            settings.youtrack_assignee_field_name = previous_field_name
+            settings.youtrack_default_assignee = previous_assignee
+            settings.youtrack_default_assignee_login = previous_login
+
+    async def test_resolve_assignee_reads_real_bundle_users(self):
+        result = await self.commit_service.resolve_value(
+            value_type="assignee",
+            raw_input="developers",
+            issue_id="SEA-1",
+        )
+        self.assertFalse(result.needs_clarification)
+        self.assertIsNotNone(result.selected)
+        assert result.selected is not None
+        self.assertEqual(result.selected.id, "user-dev")
+        self.assertEqual(result.selected.login, "acmemediakits")
 
     def test_user_directory_resolves_by_email(self):
         user = self.user_directory_service.upsert_user(
@@ -723,9 +983,29 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result[0].finish_reason, "clarification_required")
             self.assertEqual(mailbox.moves, [("3", "PROCESSING")])
             self.assertIn("progetto youtrack", mailbox.replies[0][1].lower())
+            self.assertIn("contesto operativo che sto usando", mailbox.replies[0][1].lower())
+            self.assertIn("richiesta generica di aiuto", mailbox.replies[0][1].lower())
         finally:
             settings.mailbox_allowed_sender_domains = previous_domains
             settings.mailbox_processing_folder = previous_processing
+
+    def test_mailbox_reply_body_preserves_thread_context(self):
+        mailbox = MailboxService()
+        original = MailboxMessage(
+            message_id="<m-thread-1@example.test>",
+            mailbox_uid="22",
+            sender="Mario Rossi <mario@example.com>",
+            subject="Chiarimento progetto SEA",
+            text="Ciao,\nserve aprire un ticket per il bug del catalogo.\nGrazie.",
+            received_at=datetime.now(timezone.utc),
+        )
+        reply = mailbox._build_reply_body(original, "Mi confermi il progetto esatto?")
+        self.assertIn("Mi confermi il progetto esatto?", reply)
+        self.assertIn("--- Thread context ---", reply)
+        self.assertIn("From: Mario Rossi <mario@example.com>", reply)
+        self.assertIn("Subject: Chiarimento progetto SEA", reply)
+        self.assertIn("> Ciao,", reply)
+        self.assertIn("> serve aprire un ticket per il bug del catalogo.", reply)
 
     async def test_mail_automation_assist_mode_does_not_create_ticket(self):
         previous_domains = settings.mailbox_allowed_sender_domains

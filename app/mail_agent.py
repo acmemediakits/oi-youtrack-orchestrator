@@ -428,8 +428,16 @@ class MailAutomationService:
             "If the current email is only a clarification reply, merge it with the visible thread context into request_text.\n"
             "Set project_hint when the user mentions a project by name but you are not certain about the exact YouTrack ID.\n"
             "When the email asks to create a new issue, provide a concise issue_summary in Italian and a clean issue_description.\n"
-            "issue_summary must be short, action-oriented, and must not start with generic prefixes like 'Create new issue' or 'Crea una issue'.\n"
-            "issue_description should preserve the actual requested work as plain business requirements without mail-forward boilerplate.\n"
+            "issue_summary must be 4-10 words, action-oriented, and suitable as a real YouTrack title.\n"
+            "issue_summary must not start with generic prefixes like 'Create new issue', 'Crea una issue', 'Apri ticket', or repeat project names unless necessary.\n"
+            "issue_summary must never contain full-sentence instructions, quoted email text, or the literal phrase 'con descrizione'.\n"
+            "issue_description should preserve the requested work as plain business requirements without mail-forward boilerplate.\n"
+            "issue_description should be 1 short paragraph or a compact bullet list, and must not restate the command 'crea/apri issue'.\n"
+            "If the email already contains a good explicit title and a separate body/description, keep that separation instead of paraphrasing the whole request.\n"
+            "Bad example issue_summary: 'crea un nuovo issue: Gestione avanzata permessi nel progetto EP-Projects con descrizione'.\n"
+            "Good example issue_summary: 'Gestione avanzata permessi'.\n"
+            "Bad example issue_description: 'crea un nuovo issue nel progetto EP-Projects con descrizione ...'.\n"
+            "Good example issue_description: 'Implementare una gestione avanzata dei permessi utente con ruoli e configurazioni granulari.'\n"
             f"Use issue_assignee='{settings.youtrack_default_assignee}' for new issues unless the email clearly asks for someone else.\n"
             "Never invent issue IDs, project IDs, or completed actions.\n"
         )
@@ -443,7 +451,15 @@ class MailAutomationService:
         )
 
     def _build_clarification_reply(self, message: MailboxMessage, preview, plan: MailExecutionPlan) -> str:
+        context_text = self._clarification_context_text(message, plan)
         if plan.clarification_question:
+            if context_text:
+                return (
+                    f"{plan.clarification_question}\n\n"
+                    "Contesto operativo che sto usando:\n"
+                    f"{context_text}\n\n"
+                    "Se rispondi sopra questo messaggio lasciando il contesto quotato, riesco a ricostruire meglio il thread."
+                )
             return plan.clarification_question
         lines = [
             "Ho letto la tua richiesta ma prima di procedere mi serve un chiarimento.",
@@ -458,10 +474,19 @@ class MailAutomationService:
                     f"Oggetto ricevuto: {message.subject}",
                 ]
             )
+        if context_text:
+            lines.extend(
+                [
+                    "",
+                    "Contesto operativo che sto usando:",
+                    context_text,
+                ]
+            )
         lines.extend(
             [
                 "",
                 "Appena mi rispondi completo l'operazione.",
+                "Se rispondi sopra questo messaggio lasciando il contesto quotato, riesco a ricostruire meglio il thread.",
             ]
         )
         return "\n".join(lines)
@@ -546,6 +571,20 @@ class MailAutomationService:
 
     def _normalize_execution_plan(self, message: MailboxMessage, plan: MailExecutionPlan) -> MailExecutionPlan:
         updates: dict = {}
+        request_text = plan.request_text or self._compose_request_text(message)
+
+        if plan.issue_summary:
+            normalized_summary = self._normalize_issue_summary(plan.issue_summary)
+            if normalized_summary and normalized_summary != plan.issue_summary:
+                updates["issue_summary"] = normalized_summary
+        if plan.issue_description:
+            normalized_description = self._normalize_issue_description(
+                plan.issue_description,
+                updates.get("issue_summary") or plan.issue_summary,
+                request_text,
+            )
+            if normalized_description and normalized_description != plan.issue_description:
+                updates["issue_description"] = normalized_description
 
         if plan.assist_intent == "delegate":
             if not plan.delegate_to_email and plan.delegate_to_name:
@@ -572,6 +611,27 @@ class MailAutomationService:
         if updates:
             return plan.model_copy(update=updates)
         return plan
+
+    def _normalize_issue_summary(self, summary: str | None) -> str | None:
+        cleaned = (summary or "").strip().strip('"\' ')
+        cleaned = re.sub(r"^(crea|apri|genera)\s+(un\s+)?(nuov[ao]\s+)?(issue|ticket)\s*:?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+nel progetto\s+.+$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+con descrizione\s*:.*$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = " ".join(cleaned.split())
+        return cleaned or None
+
+    def _normalize_issue_description(self, description: str | None, summary: str | None, request_text: str) -> str | None:
+        cleaned = (description or "").strip().strip('"\' ')
+        cleaned = re.sub(r"^(crea|apri|genera)\s+(un\s+)?(nuov[ao]\s+)?(issue|ticket)\s*:?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^descrizione\s*:\s*", "", cleaned, flags=re.IGNORECASE)
+        if summary:
+            cleaned = re.sub(rf'^"{re.escape(summary)}"\s*', "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(rf"^{re.escape(summary)}\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = " ".join(cleaned.split())
+        if not cleaned or cleaned.lower().startswith(("crea ", "apri ", "genera ")):
+            fallback = request_text.strip()
+            return fallback or None
+        return cleaned
 
     def _enforce_mail_permissions(self, message: MailboxMessage, user, plan: MailExecutionPlan) -> None:
         if not self.permissions or not self.user_directory:
@@ -688,6 +748,14 @@ class MailAutomationService:
             lines.append(f"Mittente originale: {sender_email}")
         lines.extend(["", "Questa email e' stata inoltrata dal bot senza apertura di ticket YouTrack."])
         return "\n".join(lines)
+
+    def _clarification_context_text(self, message: MailboxMessage, plan: MailExecutionPlan) -> str:
+        context_text = (plan.request_text or self._compose_request_text(message)).strip()
+        if not context_text:
+            return ""
+        if len(context_text) > 1200:
+            return f"{context_text[:1200].rstrip()}..."
+        return context_text
 
     def _build_commit_reply(self, message: MailboxMessage, preview, commit, plan: MailExecutionPlan) -> str:
         lines = ["Ho elaborato la tua richiesta."]

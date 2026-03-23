@@ -31,6 +31,104 @@ Open points:
 - blockers, risks, or next steps
 ```
 
+## 2026-03-23 11:10
+
+Context:
+- The active bug queue included a panel save crash when editing runtime settings and a mailbox clarification problem where reply emails lost too much context for subsequent user responses.
+
+Changes:
+- Fixed the runtime settings save path by restoring the missing `logging` import used by `RuntimeConfigService.update()`, which was a likely cause of the `/panel/settings` internal server error when toggling flags like `VERBOSE`.
+- Improved clarification replies so they now include an explicit "Contesto operativo" block built from the current interpreted request, making the outgoing email itself more self-contained.
+- Updated the SMTP reply flow to preserve thread context by appending a quoted original-message block and setting `In-Reply-To` / `References` headers when replying.
+- Added focused regression tests for runtime config updates, clarification reply content, and reply-body thread preservation.
+- Mirrored the same fixes and tests into `lada/`.
+
+Verification:
+- Ran `python3 -m py_compile app/services.py app/mailbox.py app/mail_agent.py tests/test_services.py`.
+- Attempted targeted `unittest` cases for the touched paths, but this environment still lacks `pydantic`, so import-based tests could not execute here.
+
+Open points:
+- Bug 1 and bug 3 still need live validation after deploy to confirm the panel save no longer errors and that clarification follow-ups actually preserve enough thread context in real clients.
+- This does not yet implement a persistent mailbox conversation model; it improves transport-level context retention only.
+
+## 2026-03-23 11:45
+
+Context:
+- After live confirmation that bug 1 and bug 3 appear resolved, the remaining long-term thread-memory idea needed to be separated from bug tracking and work began on bug 2 around fragile assignee application.
+
+Changes:
+- Marked bug 1 as resolved and bug 3 as resolved with short-term mitigation in `BUG_LOG.md`.
+- Extracted the medium/long-term mailbox thread-state architecture into `PLANNING_FEATURES.md`.
+- Started hardening assignee application by prioritizing the configured/exact assignee field over generic user-like fields and by making assignee value attempts more explicit and better logged.
+- Mirrored the same assignee-priority changes into `lada/`.
+
+Verification:
+- Planned verification path is syntax validation plus live retest against the tenant/project combinations that previously produced assignee uncertainty.
+
+Open points:
+- Bug 2 is still in progress and needs validation against the real YouTrack tenant.
+- The new planning file is intentionally product-facing and should stay separate from bug status noise.
+
+## 2026-03-23 12:20
+
+Context:
+- A new proposed "Intelligent YouTrack agent layer" needed to be compared against the real codebase so we could tell what is truly missing versus what already exists in partial form.
+
+Changes:
+- Reviewed the proposal against the current implementation in project matching, assistant context endpoints, preview/commit safety, and assignee metadata handling.
+- Expanded `PLANNING_FEATURES.md` with an explicit analysis of what is already implemented, what is partial, and what is still missing.
+- Added a planned feature track for a generic metadata resolver layer plus a candidate `POST /resolve-value` endpoint.
+- Documented that the main architectural gap is not project inference itself, but generic metadata/options resolution before writes.
+
+Verification:
+- Cross-checked the proposal against `ProjectMatcher`, `QueryService`, current assistant endpoints, issue custom-field handling, preview enforcement, and ambiguity/confirmation logic.
+
+Open points:
+- The proposed resolver endpoint still needs concrete API models and scope boundaries.
+- Bug 2 remains related, because assignee resolution is one of the first write-time metadata cases that should migrate onto the future generic resolver.
+
+## 2026-03-23 12:45
+
+Context:
+- Follow-up planning clarified that prompt-quality work should not remain tracked as a standalone bug and that the OpenAPI tool surface needs an explicit completeness review across Project, Issue, TimeTracking, and KnowledgeBase.
+
+Changes:
+- Reclassified the former "task generation quality" bug into planned feature work inside `PLANNING_FEATURES.md`.
+- Added a dedicated planning section for completing the YouTrack OpenAPI surface, explicitly excluding destructive `DELETE` flows.
+- Recorded the current gap analysis: good baseline coverage already exists, but metadata/transitions/KB direct operations are still incomplete.
+
+Verification:
+- Reviewed current FastAPI routes and service/client capabilities to compare exposed tools versus the target operational domains.
+
+Open points:
+- We still need to decide whether to implement the missing endpoints directly now or first finish the generic metadata resolver that many of those endpoints would depend on.
+
+## 2026-03-23 14:35
+
+Context:
+- Live BrowserOS inspection confirmed that the model still could not assign an issue because the OpenAPI surface only exposed `edit_issue` for summary/description plus the indirect preview/commit path.
+
+Changes:
+- Expanded the OpenAPI/backend surface with explicit metadata-aware issue tools:
+- `GET /projects/{project_id}`
+- `GET /issues/{issue_id}/fields`
+- `GET /issues/{issue_id}/transitions`
+- `POST /issues/{issue_id}/assignee`
+- `POST /issues/{issue_id}/state`
+- `POST /resolve-value`
+- Added typed request/response models so the generated OpenAPI describes these operations clearly to the model.
+- Extended the YouTrack client to fetch detailed issue custom fields and support command application plumbing.
+- Added service-layer resolution helpers for issue field metadata, transitions, assignee assignment, state updates, and generic value resolution.
+- Synced the updated API surface into `lada/`.
+
+Verification:
+- Ran `python3 -m py_compile app/models.py app/clients.py app/services.py app/main.py tests/test_services.py lada/app/models.py lada/app/clients.py lada/app/services.py lada/app/main.py lada/tests/test_services.py`.
+- Inspected the live `openapi.json` from BrowserOS before implementation to confirm the previous tool surface really lacked explicit assignee/custom-field/state endpoints.
+
+Open points:
+- The live server still needs redeploy before BrowserOS/Open WebUI can see the new OpenAPI surface.
+- Knowledge Base direct create/read/update endpoints are still not fully exposed as first-class tools.
+
 ## 2026-03-20 18:20
 
 Context:

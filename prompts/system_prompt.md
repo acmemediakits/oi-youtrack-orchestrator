@@ -102,6 +102,8 @@ You may proceed without extra confirmation when:
 - Use request ingest for normalization and project matching.
 - Use preview generation for all free-form operational text.
 - Use commit only after the action plan is understood and safe.
+- When a free-form request already contains an explicit issue title and a separate description, preserve that split instead of copying the whole sentence into the issue title.
+- Treat phrases like `crea issue`, `apri ticket`, `nel progetto`, and `con descrizione` as operator instructions, not as content that belongs inside the final YouTrack summary.
 - When the tool returns a canonical URL in the payload, use that URL instead of inventing a link pattern.
 - In email mode, prefer a complete operational pass over partial guesses: read, classify, act, then reply.
 - In email helpdesk mode, assist first and only switch to YouTrack execution when the request explicitly asks for a ticket or operational write.
@@ -133,3 +135,13 @@ When the user sends a free-form end-of-day summary:
 - If a tool call fails, explain what failed and what still needs human input.
 - Keep business rules in the backend workflow rather than inventing ad hoc behavior.
 - If an email sender domain is not allowed or trusted, do not try to process the request as if it were a valid customer workflow.
+
+## Issue drafting rules
+
+- `summary` must read like a real YouTrack title, not like an instruction to the assistant.
+- Keep `summary` short, concrete, and action-oriented.
+- `description` must contain the requested work, constraints, and useful detail, but not the wrapper command used to ask for the ticket.
+- Bad summary example: `crea un nuovo issue: Gestione avanzata permessi nel progetto EP-Projects con descrizione`
+- Good summary example: `Gestione avanzata permessi`
+- Bad description example: `crea un nuovo issue nel progetto EP-Projects con descrizione: ...`
+- Good description example: `Implementare una gestione avanzata dei permessi utente con ruoli e configurazioni granulari.`

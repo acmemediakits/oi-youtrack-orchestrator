@@ -83,10 +83,29 @@ class YouTrackClient:
             "GET",
             f"/api/issues/{issue_id}/customFields",
             params={
+                "fields": self._issue_custom_field_fields(),
+            },
+        )
+
+    async def get_issue_custom_field(self, issue_id: str, field_id: str) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            f"/api/issues/{issue_id}/customFields/{field_id}",
+            params={
+                "fields": self._issue_custom_field_fields(),
+            },
+        )
+
+    async def get_user_bundle(self, bundle_id: str) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            f"/api/admin/customFieldSettings/bundles/user/{bundle_id}",
+            params={
                 "fields": (
-                    "id,name,$type,"
-                    "projectCustomField(id,field(id,name)),"
-                    "value(id,name,fullName,login,presentation,isResolved)"
+                    "id,"
+                    "aggregatedUsers(id,name,fullName,login,email),"
+                    "individuals(id,name,fullName,login,email),"
+                    "groups(id,name,presentation)"
                 )
             },
         )
@@ -97,6 +116,17 @@ class YouTrackClient:
             f"/api/issues/{issue_id}/customFields/{field_id}",
             params={"fields": "id,name,$type,value(id,name,fullName,login,presentation,isResolved)"},
             json_body=payload,
+        )
+
+    async def apply_command(self, issue_id: str, query: str) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/api/commands",
+            params={"fields": "id,query,issues(id,idReadable,summary)"},
+            json_body={
+                "query": query,
+                "issues": [{"idReadable": issue_id}],
+            },
         )
 
     async def add_work_item(self, issue_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -172,6 +202,23 @@ class YouTrackClient:
         if not issue_id_readable:
             return None
         return f"{self.browser_url.rstrip('/')}/issue/{issue_id_readable}"
+
+    def _issue_custom_field_fields(self) -> str:
+        return (
+            "id,name,$type,"
+            "projectCustomField("
+            "id,canBeEmpty,field(id,name),"
+            "bundle("
+            "id,"
+            "values(id,name,presentation,fullName,login,email),"
+            "aggregatedUsers(id,name,fullName,login,email),"
+            "individuals(id,name,fullName,login,email),"
+            "groups(id,name,presentation)"
+            ")"
+            "),"
+            "value(id,name,fullName,login,presentation,email,isResolved,text),"
+            "possibleEvents(id,name,presentation)"
+        )
 
 
 @dataclass(slots=True)

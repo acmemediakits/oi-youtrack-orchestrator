@@ -212,11 +212,21 @@ class MailboxService:
         self.send_message(
             recipient,
             f"Re: {original.subject}" if original.subject else "Re: richiesta",
-            body,
+            self._build_reply_body(original, body),
+            in_reply_to=original.message_id,
+            references=original.message_id,
         )
         logger.info("SMTP reply sent to=%s for message_id=%s", recipient, original.message_id)
 
-    def send_message(self, recipient: str, subject: str, body: str) -> None:
+    def send_message(
+        self,
+        recipient: str,
+        subject: str,
+        body: str,
+        *,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> None:
         if not settings.mailbox_smtp_host or not settings.mailbox_username or not settings.mailbox_password:
             logger.warning("SMTP send skipped for recipient=%s because SMTP configuration is incomplete.", recipient)
             return
@@ -224,6 +234,10 @@ class MailboxService:
         message["From"] = settings.mailbox_username
         message["To"] = recipient
         message["Subject"] = subject
+        if in_reply_to:
+            message["In-Reply-To"] = in_reply_to
+        if references:
+            message["References"] = references
         message.set_content(body)
 
         protocol = settings.mailbox_smtp_protocol.upper()
@@ -254,6 +268,32 @@ class MailboxService:
                 smtp.login(settings.mailbox_username, settings.mailbox_password)
                 smtp.send_message(message)
         logger.info("SMTP message sent to=%s subject=%s", recipient, subject)
+
+    def _build_reply_body(self, original: MailboxMessage, body: str) -> str:
+        reply_text = (body or "").strip()
+        thread_context = self._thread_context_block(original)
+        if not thread_context:
+            return reply_text
+        if not reply_text:
+            return thread_context
+        return f"{reply_text}\n\n{thread_context}"
+
+    def _thread_context_block(self, original: MailboxMessage) -> str:
+        original_text = (original.text or "").strip()
+        if not original_text and not original.subject and not original.sender:
+            return ""
+        if len(original_text) > 6000:
+            original_text = f"{original_text[:6000].rstrip()}\n[thread context truncated]"
+        quoted_lines = "\n".join(f"> {line}" if line else ">" for line in original_text.splitlines()) if original_text else "> [no plain text body captured]"
+        lines = ["--- Thread context ---"]
+        if original.sender:
+            lines.append(f"From: {original.sender}")
+        if original.subject:
+            lines.append(f"Subject: {original.subject}")
+        if original.message_id:
+            lines.append(f"Message-ID: {original.message_id}")
+        lines.extend(["", quoted_lines])
+        return "\n".join(lines)
 
     def _extract_text(self, parsed: email.message.Message) -> str:
         if parsed.is_multipart():

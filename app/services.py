@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 import calendar
+from difflib import SequenceMatcher
 import hashlib
+import logging
 import re
 import secrets
 from dataclasses import dataclass
@@ -20,9 +22,12 @@ from app.models import (
     CommitResult,
     GlobalTimeTrackingSummary,
     IngestRequestInput,
+    IssueFieldMetadata,
+    IssueFieldOption,
     IssueSubscription,
     IssueSearchResult,
     IssueOperation,
+    ProjectMetadata,
     KnowledgeOperation,
     NormalizedRequest,
     OperationResult,
@@ -31,6 +36,7 @@ from app.models import (
     PreviewInput,
     ProjectCandidate,
     ProjectMatch,
+    ResolveValueResult,
     RequestStatus,
     RuntimeConfig,
     RuntimeMailboxFolders,
@@ -76,6 +82,22 @@ def normalize_text(text: str) -> str:
     return " ".join(text.strip().split())
 
 
+def normalize_match_token(text: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").strip().lower()).strip()
+
+
+def similarity_score(left: str | None, right: str | None) -> float:
+    normalized_left = normalize_match_token(left)
+    normalized_right = normalize_match_token(right)
+    if not normalized_left or not normalized_right:
+        return 0.0
+    if normalized_left == normalized_right:
+        return 1.0
+    if normalized_left in normalized_right or normalized_right in normalized_left:
+        return 0.9
+    return SequenceMatcher(a=normalized_left, b=normalized_right).ratio()
+
+
 def split_sentences(text: str) -> list[str]:
     chunks = re.split(r"[\n;,]+", text)
     return [normalize_text(chunk) for chunk in chunks if normalize_text(chunk)]
@@ -101,6 +123,24 @@ def extract_duration_minutes(text: str) -> int | None:
     if unit.startswith("min"):
         return int(raw_value)
     return int(raw_value * 60)
+
+
+def extract_issue_reference(text: str) -> str | None:
+    for raw_token in re.split(r"\s+", text or ""):
+        token = raw_token.strip(".,;:!?()[]{}<>\"'")
+        if "-" not in token:
+            continue
+        prefix, suffix = token.rsplit("-", 1)
+        normalized_prefix = prefix.replace("_", "")
+        if not normalized_prefix or not suffix.isdigit():
+            continue
+        if not normalized_prefix[0].isalpha():
+            continue
+        if not all(char.isalnum() or char == "_" for char in prefix):
+            continue
+        return token
+    match = ISSUE_ID_PATTERN.search(text or "")
+    return match.group(1) if match else None
 
 
 def utc_datetime_from_millis(raw: int | None) -> datetime | None:
@@ -557,7 +597,7 @@ class PreviewService:
 
         for chunk in split_sentences(text):
             lowered = chunk.lower()
-            issue_id_match = ISSUE_ID_PATTERN.search(chunk)
+            issue_id = extract_issue_reference(chunk)
             duration = extract_duration_minutes(chunk)
 
             if any(keyword in lowered for keyword in ["knowledge", "kb", "salvare", "salva", "script", "comando"]):
@@ -575,7 +615,6 @@ class PreviewService:
                 continue
 
             if duration:
-                issue_id = issue_id_match.group(1) if issue_id_match else None
                 needs_confirmation = False
                 project_id = project_match.selected_project_id
                 worklog_description = explicit_worklog_comment or chunk
@@ -604,13 +643,14 @@ class PreviewService:
 
                 if any(keyword in lowered for keyword in ["bug", "fix", "risolto", "feature", "ticket"]):
                     action = "update" if issue_id else "create"
+                    summary, description = self._issue_content(explicit_worklog_comment or chunk)
                     issue_ops.append(
                         IssueOperation(
                             action=action,
                             project_id=project_id,
                             issue_id=issue_id,
-                            summary=self._issue_summary(chunk),
-                            description=explicit_worklog_comment or chunk,
+                            summary=summary,
+                            description=description,
                             assignee=self._default_issue_assignee(action),
                             confidence=0.65 if issue_id else 0.8,
                             needs_confirmation=project_match.status != "matched" or not issue_id,
@@ -622,27 +662,29 @@ class PreviewService:
                 keyword in lowered
                 for keyword in ["bug", "fix", "risolto", "errore", "feature", "richiesta", "debug", "supporto"]
             ):
-                action = "update" if issue_id_match else "create"
+                action = "update" if issue_id else "create"
+                summary, description = self._issue_content(chunk)
                 issue_ops.append(
                     IssueOperation(
                         action=action,
                         project_id=project_match.selected_project_id,
-                        issue_id=issue_id_match.group(1) if issue_id_match else None,
-                        summary=self._issue_summary(chunk),
-                        description=chunk,
+                        issue_id=issue_id,
+                        summary=summary,
+                        description=description,
                         assignee=self._default_issue_assignee(action),
-                        confidence=0.6 if issue_id_match else 0.75,
-                        needs_confirmation=project_match.status != "matched" or not issue_id_match,
+                        confidence=0.6 if issue_id else 0.75,
+                        needs_confirmation=project_match.status != "matched" or not issue_id,
                     )
                 )
 
         if not issue_ops and not worklog_ops and not knowledge_ops and text:
+            summary, description = self._issue_content(text)
             issue_ops.append(
                 IssueOperation(
                     action="create",
                     project_id=project_match.selected_project_id,
-                    summary=text[:120],
-                    description=text,
+                    summary=summary,
+                    description=description,
                     assignee=self._default_issue_assignee("create"),
                     confidence=0.7 if project_match.selected_project_id else 0.4,
                     needs_confirmation=project_match.status != "matched",
@@ -676,8 +718,61 @@ class PreviewService:
         return preview
 
     def _issue_summary(self, chunk: str) -> str:
-        stripped = ISSUE_ID_PATTERN.sub("", chunk).strip()
+        summary, _ = self._issue_content(chunk)
+        return summary
+
+    def _issue_content(self, chunk: str) -> tuple[str, str]:
+        explicit_summary, explicit_description = self._extract_explicit_issue_content(chunk)
+        summary = self._clean_issue_summary(explicit_summary or chunk)
+        description = self._clean_issue_description(explicit_description or chunk, summary)
+        return summary, description
+
+    def _extract_explicit_issue_content(self, text: str) -> tuple[str | None, str | None]:
+        stripped = normalize_text(text)
+        summary_match = re.search(
+            r'(?:issue|ticket)[^"\n:]*:\s*"([^"]+)"|(?:issue|ticket)[^"\n]*"([^"]+)"',
+            stripped,
+            re.IGNORECASE,
+        )
+        description_match = re.search(r'descrizione\s*:\s*"([^"]+)"', stripped, re.IGNORECASE)
+        summary = None
+        if summary_match:
+            summary = summary_match.group(1) or summary_match.group(2)
+        description = description_match.group(1) if description_match else None
+        return summary, description
+
+    def _clean_issue_summary(self, text: str) -> str:
+        issue_ref = extract_issue_reference(text)
+        stripped = text.replace(issue_ref, "", 1).strip() if issue_ref else ISSUE_ID_PATTERN.sub("", text).strip()
+        patterns = [
+            r"^(crea|apri|genera)\s+(un\s+)?(nuov[ao]\s+)?(issue|ticket)\s*:?\s*",
+            r"^(crea|apri|genera)\s*:?\s*",
+        ]
+        for pattern in patterns:
+            stripped = re.sub(pattern, "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r'\s+nel progetto\s+.+$', "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r'\s+con descrizione\s*:.*$', "", stripped, flags=re.IGNORECASE)
+        stripped = stripped.strip().strip('"\' ')
+        stripped = normalize_text(stripped)
         return stripped[:120] if stripped else "Attivita' cliente"
+
+    def _clean_issue_description(self, text: str, summary: str) -> str:
+        cleaned = normalize_text(text).strip().strip('"\' ')
+        cleaned = re.sub(r"^(crea|apri|genera)\s+(un\s+)?(nuov[ao]\s+)?(issue|ticket)\s*:?\s*", "", cleaned, flags=re.IGNORECASE)
+        if summary:
+            summary_patterns = [
+                rf'^"{re.escape(summary)}"\s*',
+                rf"^{re.escape(summary)}\s*",
+            ]
+            for pattern in summary_patterns:
+                cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^\s*(nel progetto\s+[^\"]+?)\s*(con descrizione\s*:)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^descrizione\s*:\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = cleaned.strip().strip('"\' ')
+        cleaned = normalize_text(cleaned)
+        if not cleaned or normalize_match_token(cleaned) == normalize_match_token(summary):
+            cleaned = normalize_text(text).strip()
+        return cleaned
 
     def _knowledge_title(self, chunk: str) -> str:
         cleaned = chunk.replace('"', "").replace("'", "").strip()
@@ -762,6 +857,30 @@ class QueryService:
 
         results.sort(key=lambda item: (item.archived, -item.confidence, item.name.lower()))
         return results[:limit]
+
+    async def get_project_metadata(self, project_id: str) -> ProjectMetadata | None:
+        project = await self._project_details(project_id)
+        if not project:
+            return None
+        matched_rule = None
+        for rule in self.directory.list_all():
+            if (
+                project.get("id") == rule.default_project_id
+                or project.get("id") in rule.project_ids
+                or project.get("shortName") in rule.project_ids
+            ):
+                matched_rule = rule
+                break
+        return ProjectMetadata(
+            project_id=project.get("id"),
+            short_name=project.get("shortName") or project.get("id"),
+            name=project.get("name") or project.get("shortName") or project.get("id"),
+            archived=bool(project.get("archived")),
+            aliases=list(matched_rule.aliases) if matched_rule else [],
+            domains=list(matched_rule.domains) if matched_rule else [],
+            default_for_customer=matched_rule.customer_label if matched_rule else None,
+            reason="customer directory rule matched" if matched_rule else None,
+        )
 
     async def list_project_issues(
         self,
@@ -1099,6 +1218,10 @@ class CommitService:
                         {"summary": operation.summary, "description": operation.description},
                     )
                     assignment_error = None
+                    if operation.assignee:
+                        assignment_error = await self._assign_issue(response, operation.assignee)
+                        if assignment_error:
+                            errors.append(assignment_error)
                 issue_results.append(
                     OperationResult(
                         kind=ActionKind.issue,
@@ -1224,6 +1347,136 @@ class CommitService:
                 self.requests.upsert(updated_request.id, updated_request)
         return result
 
+    async def list_issue_fields(self, issue_id: str) -> list[IssueFieldMetadata]:
+        fields = await self.youtrack_client.list_issue_custom_fields(issue_id)
+        return [await self._normalize_issue_field(issue_id, field) for field in fields]
+
+    async def list_issue_transitions(self, issue_id: str) -> list[IssueFieldOption]:
+        fields = await self.list_issue_fields(issue_id)
+        transitions: list[IssueFieldOption] = []
+        for field in fields:
+            if field.possible_events:
+                transitions.extend(field.possible_events)
+        seen: set[tuple[str | None, str]] = set()
+        deduped: list[IssueFieldOption] = []
+        for item in transitions:
+            key = (item.id, item.name)
+            if key in seen:
+                continue
+            deduped.append(item)
+            seen.add(key)
+        return deduped
+
+    async def assign_issue_by_id(self, issue_id: str, assignee: str) -> dict:
+        issue = await self.youtrack_client.get_issue(issue_id)
+        issue_ref = issue.get("idReadable") or issue.get("id") or issue_id
+        assignment_error = await self._assign_issue({"idReadable": issue_ref, "id": issue.get("id")}, assignee)
+        refreshed = await self.youtrack_client.get_issue(issue_ref)
+        return {
+            **refreshed,
+            "url": self.youtrack_client.issue_url(refreshed.get("idReadable") or refreshed.get("id")),
+            "assignment_error": assignment_error,
+        }
+
+    async def update_issue_state_by_id(self, issue_id: str, state_input: str) -> dict:
+        fields = await self.youtrack_client.list_issue_custom_fields(issue_id)
+        state_candidates = [
+            field for field in fields
+            if (field.get("$type") or "").lower() in {"stateissuecustomfield", "statemachineissuecustomfield"}
+            or (field.get("name") or "").lower() == "state"
+        ]
+        if not state_candidates:
+            raise ValueError(f"No state field found for issue {issue_id}.")
+        candidate = state_candidates[0]
+        field_id = candidate.get("id")
+        if not field_id:
+            raise ValueError(f"State field for issue {issue_id} has no field id.")
+        detailed_field = await self.youtrack_client.get_issue_custom_field(issue_id, field_id)
+        field_type = detailed_field.get("$type") or "StateIssueCustomField"
+        resolution = self._resolve_issue_field_value(
+            field=detailed_field,
+            raw_input=state_input,
+            value_type="transition" if "statemachine" in field_type.lower() else "status",
+        )
+        if not resolution.selected:
+            raise ValueError(f"Could not resolve state '{state_input}' for issue {issue_id}.")
+        if "statemachine" in field_type.lower():
+            payload = {
+                "id": detailed_field.get("id"),
+                "name": detailed_field.get("name"),
+                "$type": field_type,
+                "event": {"id": resolution.selected.id} if resolution.selected.id else {"name": resolution.selected.name},
+            }
+        else:
+            payload = {
+                "id": detailed_field.get("id"),
+                "name": detailed_field.get("name"),
+                "$type": field_type,
+                "value": {"name": resolution.selected.name},
+            }
+        await self.youtrack_client.update_issue_custom_field(issue_id, field_id, payload)
+        refreshed = await self.youtrack_client.get_issue(issue_id)
+        return {
+            **refreshed,
+            "url": self.youtrack_client.issue_url(refreshed.get("idReadable") or refreshed.get("id")),
+            "resolved_state": resolution.selected.model_dump(),
+        }
+
+    async def resolve_value(
+        self,
+        *,
+        value_type: str,
+        raw_input: str,
+        project_id: str | None = None,
+        issue_id: str | None = None,
+        field_name: str | None = None,
+    ) -> ResolveValueResult:
+        selected: IssueFieldOption | None = None
+        candidates: list[IssueFieldOption] = []
+        if value_type == "assignee":
+            if not issue_id:
+                raise ValueError("issue_id is required to resolve 'assignee'.")
+            assignee_resolution = await self._resolve_assignee_candidates(issue_id, raw_input)
+            candidates = assignee_resolution.candidates
+            selected = assignee_resolution.selected
+            field_name = field_name or assignee_resolution.field_name
+        elif value_type in {"status", "transition", "issue_field", "priority"}:
+            if not issue_id:
+                raise ValueError(f"issue_id is required to resolve '{value_type}'.")
+            fields = await self.youtrack_client.list_issue_custom_fields(issue_id)
+            matching_fields = fields
+            if field_name:
+                matching_fields = [field for field in fields if normalize_match_token(field.get("name")) == normalize_match_token(field_name)]
+            resolved_field = None
+            field_resolution = None
+            for field in matching_fields:
+                field_id = field.get("id")
+                if not field_id:
+                    continue
+                detailed_field = await self.youtrack_client.get_issue_custom_field(issue_id, field_id)
+                field_resolution = self._resolve_issue_field_value(detailed_field, raw_input, value_type)
+                if field_resolution.candidates:
+                    resolved_field = detailed_field
+                    break
+            if field_resolution:
+                candidates = field_resolution.candidates
+                selected = field_resolution.selected
+                field_name = field_name or (resolved_field or {}).get("name")
+        else:
+            raise ValueError(f"Unsupported resolve-value type '{value_type}'.")
+        ambiguous = len(candidates) > 1 and selected is not None and (candidates[1].score or 0) >= (selected.score or 0) - 0.08
+        return ResolveValueResult(
+            type=value_type,
+            input=raw_input,
+            issue_id=issue_id,
+            project_id=project_id,
+            field_name=field_name,
+            selected=selected,
+            candidates=candidates,
+            ambiguous=ambiguous,
+            needs_clarification=selected is None or ambiguous or (selected.score or 0) < 0.6,
+        )
+
     async def _assign_issue(self, response: dict, assignee: str) -> str | None:
         issue_ref = response.get("idReadable") or response.get("id")
         if not issue_ref:
@@ -1232,20 +1485,29 @@ class CommitService:
         field_candidates = await self._assignee_field_candidates(issue_ref)
         if not field_candidates:
             return f"Assignee '{assignee}' could not be applied to {issue_ref}: no compatible issue custom field was found."
+        field_candidates = self._preferred_assignee_candidates(field_candidates)
 
-        value_variants = [
-            {"login": settings.youtrack_default_assignee_login or assignee},
-            {"name": assignee},
-            {"fullName": assignee},
-        ]
+        resolved_assignee = await self._resolve_assignee_option(issue_ref, assignee)
+        value_variants = self._assignee_value_variants(assignee, resolved_assignee)
 
         last_error = None
+        attempted_fields: list[str] = []
         for candidate in field_candidates:
             field_id = candidate.get("id")
             field_name = candidate.get("name")
             field_type = candidate.get("$type") or "SingleUserIssueCustomField"
+            attempted_fields.append(field_name or field_id or "unknown-field")
             for value in value_variants:
                 try:
+                    logger = logging.getLogger(__name__)
+                    logger.info(
+                        "Trying assignee update issue=%s field_id=%s field_name=%s field_type=%s value_keys=%s",
+                        issue_ref,
+                        field_id,
+                        field_name,
+                        field_type,
+                        ",".join(sorted(value.keys())),
+                    )
                     if field_id:
                         payload = {
                             "id": field_id,
@@ -1270,7 +1532,162 @@ class CommitService:
                     return None
                 except Exception as exc:
                     last_error = str(exc)
-        return f"Assignee '{assignee}' could not be applied to {issue_ref}: {last_error}"
+                    logging.getLogger(__name__).warning(
+                        "Assignee update attempt failed issue=%s field_id=%s field_name=%s value=%s error=%s",
+                        issue_ref,
+                        field_id,
+                        field_name,
+                        value,
+                        exc,
+                    )
+        attempted_fields_label = ", ".join(dict.fromkeys(filter(None, attempted_fields)))
+        return (
+            f"Assignee '{assignee}' could not be applied to {issue_ref}: {last_error}. "
+            f"Attempted fields: {attempted_fields_label or 'none'}"
+        )
+
+    async def _normalize_issue_field(self, issue_id: str, field: dict) -> IssueFieldMetadata:
+        enriched_field = await self._enrich_issue_field_bundle(issue_id, field)
+        return IssueFieldMetadata(
+            id=enriched_field.get("id") or "",
+            name=enriched_field.get("name") or "",
+            field_type=enriched_field.get("$type") or "",
+            current_value=enriched_field.get("value"),
+            can_be_empty=((enriched_field.get("projectCustomField") or {}).get("canBeEmpty")),
+            possible_values=self._field_options_from_bundle(enriched_field),
+            possible_events=self._field_options_from_events(enriched_field),
+        )
+
+    def _field_options_from_bundle(self, field: dict) -> list[IssueFieldOption]:
+        bundle = ((field.get("projectCustomField") or {}).get("bundle")) or {}
+        field_type = (field.get("$type") or "").lower()
+        values = []
+        if "userissuecustomfield" in field_type:
+            values = bundle.get("aggregatedUsers") or bundle.get("individuals") or bundle.get("values") or []
+        else:
+            values = bundle.get("values") or []
+        options: list[IssueFieldOption] = []
+        for value in values:
+            name = value.get("name") or value.get("presentation") or value.get("fullName") or value.get("login")
+            if not name:
+                continue
+            options.append(
+                IssueFieldOption(
+                    id=value.get("id"),
+                    name=name,
+                    presentation=value.get("presentation"),
+                    login=value.get("login"),
+                    full_name=value.get("fullName"),
+                    email=value.get("email"),
+                )
+            )
+        return options
+
+    def _field_options_from_events(self, field: dict) -> list[IssueFieldOption]:
+        events = field.get("possibleEvents") or []
+        return [
+            IssueFieldOption(id=item.get("id"), name=item.get("name") or item.get("presentation") or "", presentation=item.get("presentation"))
+            for item in events
+            if item.get("name") or item.get("presentation")
+        ]
+
+    def _resolve_issue_field_value(self, field: dict, raw_input: str, value_type: str) -> ResolveValueResult:
+        candidates: list[IssueFieldOption] = []
+        if value_type == "transition":
+            base_options = self._field_options_from_events(field)
+        else:
+            base_options = self._field_options_from_bundle(field)
+        for option in base_options:
+            score = max(
+                similarity_score(raw_input, option.name),
+                similarity_score(raw_input, option.presentation),
+                similarity_score(raw_input, option.login),
+                similarity_score(raw_input, option.full_name),
+                similarity_score(raw_input, option.email),
+            )
+            if score <= 0:
+                continue
+            candidates.append(option.model_copy(update={"score": round(score, 3), "reason": "fuzzy/name match"}))
+        candidates.sort(key=lambda item: (-(item.score or 0), item.name.lower()))
+        selected = candidates[0] if candidates else None
+        return ResolveValueResult(
+            type=value_type,
+            input=raw_input,
+            issue_id=None,
+            project_id=None,
+            field_name=field.get("name"),
+            selected=selected,
+            candidates=candidates[:10],
+            ambiguous=len(candidates) > 1 and (candidates[1].score or 0) >= ((selected.score or 0) - 0.08) if selected else False,
+            needs_clarification=selected is None,
+        )
+
+    async def _resolve_assignee_candidates(self, issue_id: str, raw_input: str) -> ResolveValueResult:
+        candidates: list[IssueFieldOption] = []
+        selected: IssueFieldOption | None = None
+        resolved_field_name: str | None = None
+        fields = await self.list_issue_fields(issue_id)
+        assignee_fields = [
+            field
+            for field in fields
+            if "userissuecustomfield" in field.field_type.lower()
+            and any(token in field.name.lower() for token in ["assignee", "team", "owner"])
+        ]
+        for field in assignee_fields:
+            field_candidates = self._resolve_issue_field_value(
+                {
+                    "name": field.name,
+                    "$type": field.field_type,
+                    "projectCustomField": {
+                        "bundle": {
+                            "aggregatedUsers": [item.model_dump(exclude_none=True) for item in field.possible_values],
+                        }
+                    },
+                },
+                raw_input,
+                "assignee",
+            )
+            if field_candidates.candidates:
+                candidates = field_candidates.candidates
+                selected = field_candidates.selected
+                resolved_field_name = field.name
+                break
+
+        configured = (settings.youtrack_default_assignee or "").strip()
+        configured_login = (settings.youtrack_default_assignee_login or "").strip()
+        if not candidates and configured:
+            score = max(similarity_score(raw_input, configured), similarity_score(raw_input, configured_login))
+            if score > 0:
+                candidates.append(
+                    IssueFieldOption(
+                        id=configured_login or None,
+                        name=configured,
+                        presentation=configured_login or None,
+                        login=configured_login or None,
+                        score=round(score, 3),
+                        reason="configured default assignee",
+                    )
+                )
+        deduped: list[IssueFieldOption] = []
+        seen = set()
+        for item in sorted(candidates, key=lambda candidate: -(candidate.score or 0)):
+            key = (item.id, item.name, item.login)
+            if key in seen:
+                continue
+            deduped.append(item)
+            seen.add(key)
+        selected = deduped[0] if deduped else None
+        ambiguous = len(deduped) > 1 and selected is not None and (deduped[1].score or 0) >= ((selected.score or 0) - 0.08)
+        return ResolveValueResult(
+            type="assignee",
+            input=raw_input,
+            issue_id=issue_id,
+            field_name=resolved_field_name,
+            selected=selected,
+            candidates=deduped[:10],
+            ambiguous=ambiguous,
+            needs_clarification=selected is None or ambiguous or (selected.score or 0) < 0.6,
+        )
 
     async def _assignee_field_candidates(self, issue_ref: str) -> list[dict]:
         try:
@@ -1311,7 +1728,99 @@ class CommitService:
                 continue
             deduped.append(candidate)
             seen.add(key)
+        return sorted(deduped, key=self._assignee_candidate_priority, reverse=True)
+
+    def _assignee_value_variants(self, assignee: str, resolved_option: IssueFieldOption | None = None) -> list[dict]:
+        normalized_assignee = (assignee or "").strip()
+        default_assignee = (settings.youtrack_default_assignee or "").strip().lower()
+        configured_login = (settings.youtrack_default_assignee_login or "").strip()
+        variants: list[dict] = []
+        if resolved_option:
+            if resolved_option.id:
+                variants.append({"id": resolved_option.id})
+            if resolved_option.login:
+                variants.append({"login": resolved_option.login})
+            if resolved_option.full_name:
+                variants.append({"fullName": resolved_option.full_name})
+            variants.append({"name": resolved_option.name})
+        if configured_login and normalized_assignee.lower() == default_assignee:
+            variants.append({"login": configured_login})
+        variants.extend(
+            [
+                {"login": normalized_assignee},
+                {"fullName": normalized_assignee},
+                {"name": normalized_assignee},
+            ]
+        )
+        deduped: list[dict] = []
+        seen = set()
+        for item in variants:
+            key = tuple(item.items())
+            if key in seen:
+                continue
+            deduped.append(item)
+            seen.add(key)
         return deduped
+
+    async def _resolve_assignee_option(self, issue_ref: str, raw_input: str) -> IssueFieldOption | None:
+        resolution = await self._resolve_assignee_candidates(issue_ref, raw_input)
+        return resolution.selected
+
+    async def _enrich_issue_field_bundle(self, issue_id: str, field: dict) -> dict:
+        if "userissuecustomfield" not in (field.get("$type") or "").lower():
+            return field
+        bundle = ((field.get("projectCustomField") or {}).get("bundle")) or {}
+        if bundle.get("aggregatedUsers"):
+            return field
+        bundle_id = bundle.get("id")
+        if not bundle_id or not hasattr(self.youtrack_client, "get_user_bundle"):
+            return field
+        try:
+            user_bundle = await self.youtrack_client.get_user_bundle(bundle_id)
+        except Exception:
+            return field
+        enriched = dict(field)
+        project_custom_field = dict((field.get("projectCustomField") or {}))
+        merged_bundle = dict(bundle)
+        merged_bundle.update(user_bundle or {})
+        project_custom_field["bundle"] = merged_bundle
+        enriched["projectCustomField"] = project_custom_field
+        return enriched
+
+    def _preferred_assignee_candidates(self, candidates: list[dict]) -> list[dict]:
+        if not candidates:
+            return []
+        scored = [(candidate, self._assignee_candidate_priority(candidate)) for candidate in candidates]
+        max_score = max(score for _, score in scored)
+        if max_score <= 0:
+            return candidates
+        preferred = [candidate for candidate, score in scored if score == max_score]
+        return preferred or candidates
+
+    def _assignee_candidate_priority(self, candidate: dict) -> int:
+        configured_name = (settings.youtrack_assignee_field_name or "").strip().lower()
+        field_name = (candidate.get("name") or "").strip().lower()
+        project_field_name = (
+            (((candidate.get("projectCustomField") or {}).get("field") or {}).get("name") or "").strip().lower()
+        )
+        field_type = (candidate.get("$type") or "").lower()
+
+        score = 0
+        if configured_name and field_name == configured_name:
+            score += 200
+        if configured_name and project_field_name == configured_name:
+            score += 180
+        if configured_name and configured_name and configured_name in field_name:
+            score += 80
+        if "assignee" in field_name or "owner" in field_name:
+            score += 60
+        if "team" in field_name:
+            score += 50
+        if "userissuecustomfield" in field_type:
+            score += 40
+        if candidate.get("id"):
+            score += 10
+        return score
 
 
 @dataclass(slots=True)
