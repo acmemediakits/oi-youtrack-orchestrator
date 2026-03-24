@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.clients import OpenWebUIClient, YouTrackClient
+from app.email_orchestrator import OpenWebUIEmailOrchestrator
 from app.mail_agent import MailAutomationRunner, MailAutomationService
 from app.mailbox import MailboxService
 from app.repositories import (
@@ -128,6 +129,11 @@ def get_openwebui_client() -> OpenWebUIClient:
 
 
 @lru_cache
+def get_email_orchestrator() -> OpenWebUIEmailOrchestrator:
+    return OpenWebUIEmailOrchestrator(openwebui=get_openwebui_client())
+
+
+@lru_cache
 def get_mailbox_service() -> MailboxService:
     return MailboxService(runtime_config=get_runtime_config_service())
 
@@ -163,7 +169,7 @@ def get_admin_approval_service() -> AdminApprovalService:
 def get_mail_automation_service() -> MailAutomationService:
     return MailAutomationService(
         mailbox=get_mailbox_service(),
-        openwebui=get_openwebui_client(),
+        openwebui=get_email_orchestrator(),
         processed=get_mail_processing_repository(),
         request_service=get_request_service(),
         preview_service=get_preview_service(),

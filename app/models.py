@@ -368,6 +368,15 @@ class OpenWebUIReply(BaseModel):
     raw_response: dict[str, Any] = Field(default_factory=dict)
 
 
+class EmailChannelPayload(BaseModel):
+    sender: str
+    subject: str | None = None
+    body: str
+    message_id: str | None = None
+    mailbox_uid: str | None = None
+    channel: Literal["email"] = "email"
+
+
 class MailExecutionPlan(BaseModel):
     request_text: str
     workflow_mode: Literal["youtrack", "assist"] = "youtrack"

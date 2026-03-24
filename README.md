@@ -9,6 +9,16 @@ Backend OpenAPI pensato per Open WebUI che centralizza:
 - audit locale di richieste, preview e commit
 - pannello web minimale per runtime config, whitelist utenti e stato bootstrap
 
+## Architettura in transizione
+
+Il repo sta passando da monolite operativo a monorepo multi-service:
+
+- `services/youtrack_core`: tool-core OpenAPI YouTrack
+- `services/email_channel`: adapter mailbox che normalizza il canale email e delega l'orchestrazione a OpenWebUI
+- panel/ops: resta temporaneamente accoppiato al tool-core per continuita' di deploy
+
+OpenWebUI resta il solo orchestratore/model host. L'email non deve piu' comportarsi come un secondo planner indipendente.
+
 ## Avvio
 
 1. Crea un virtualenv ed installa le dipendenze:
@@ -32,11 +42,22 @@ cp .env.example .env
 
 L'OpenAPI sarà disponibile su `/openapi.json`, direttamente riusabile come tool server in Open WebUI.
 
+Entry point separati disponibili:
+
+```bash
+.venv/bin/uvicorn services.youtrack_core.main:app --reload
+.venv/bin/uvicorn services.email_channel.main:app --reload --port 8001
+```
+
 ## Configurazione
 
 - `data/client_directory.json`: rubrica clienti -> progetto YouTrack
 - `data/`: storage locale per richieste, preview, commit, runtime config e whitelist utenti
 - `.env`: solo secret/bootstrap come token YouTrack, tenant URL, credenziali mailbox, `PANEL_ADMIN_PASSWORD`, `SUPER_ADMIN_EMAIL`
+- bootstrap architetturale:
+  - `SERVICE_ROLE=monolith|tool_core|email_channel`
+  - `STATE_BACKEND=json|postgres`
+  - `DATABASE_URL=postgresql://...` quando si usa Postgres
 - JSON runtime in `data/`: cartelle mailbox, domini mittenti ammessi, intervallo polling, `VERBOSE`
 - logs Docker: il worker mail scrive eventi su polling IMAP, filtro domini, chiamata Open WebUI e invio SMTP
 - cartelle IMAP: `INBOX`, `PROCESSING`, `PROCESSED`, `FAILED`, `REJECTED` usate come stato operativo principale del workflow mail
@@ -88,6 +109,7 @@ L'OpenAPI sarà disponibile su `/openapi.json`, direttamente riusabile come tool
 - `GET /test?heartbeat=...`
 - `GET /test?mailto=...`
 - `GET /test?mailjoke=...`
+- `POST /run-once` nel servizio `email_channel`
 
 ## Deploy
 
@@ -108,8 +130,10 @@ docker logs acme_youtrack_api --tail=100
 - Il parsing mail/planner non e' piu' regex-first: il modello decide la struttura, ma il backend mantiene i guardrail.
 - Open WebUI può usare il backend come tool OpenAPI e lasciare al modello il compito di produrre testo/decisioni.
 - Il canale Open WebUI/chat e il canale mailbox sono intenzionalmente separati: la chat gira in trusted assistant mode configurabile, mentre le email restano soggette a controlli anti-spoofing e anti-injection.
+- Il planner email non e' piu' pensato come cervello hardcoded del monolite: il canale mailbox usa un orchestrator dedicato e un prompt asset esterno in `prompts/email_channel_planner.md`.
 - Il backend ora espone sia tool di scrittura sia tool di ricerca/listing, così l'assistente può cercare contesto prima di chiedere dettagli all'utente.
 - La lettura IMAP è supportata via servizio dedicato e può girare in polling automatico.
+- Lo storage operativo ha ora un backend switchabile `json|postgres`; durante la transizione il file store resta il fallback compatibile.
 - In fase di startup il backend prova anche ad assicurare le cartelle runtime IMAP (`PROCESSING`, `PROCESSED`, `FAILED`, `REJECTED`) e a sottoscriverle.
 - Il layer mail usa un filtro esplicito di domini mittenti autorizzati.
 - Le email rumorose possono essere trattate in modalità helpdesk/assist senza creare ticket YouTrack di default.

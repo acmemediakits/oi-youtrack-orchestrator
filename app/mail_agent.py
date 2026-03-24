@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from app.config import settings
-from app.models import CommitInput, IngestRequestInput, MailExecutionPlan, MailProcessingRecord, MailboxMessage, PreviewInput, RequestSource
+from app.models import CommitInput, EmailChannelPayload, IngestRequestInput, MailExecutionPlan, MailProcessingRecord, MailboxMessage, PreviewInput, RequestSource
 from app.services import parse_mail_identity, parse_reporting_period, sender_author_hints
 
 logger = logging.getLogger(__name__)
@@ -287,10 +287,19 @@ class MailAutomationService:
     async def _plan_with_ytbot(self, message: MailboxMessage):
         if not self.openwebui:
             return None
+        payload = EmailChannelPayload(
+            sender=message.sender,
+            subject=message.subject,
+            body=message.text,
+            message_id=message.message_id,
+            mailbox_uid=message.mailbox_uid,
+        )
+        if hasattr(self.openwebui, "plan"):
+            return await self.openwebui.plan(payload)
         try:
             reply = await self.openwebui.generate_structured_reply(
-                system_prompt=self._planner_system_prompt(),
-                user_prompt=self._planner_user_prompt(message),
+                system_prompt="Return valid MailExecutionPlan JSON only.",
+                user_prompt=payload.model_dump_json(),
             )
             return reply
         except Exception:
@@ -361,11 +370,16 @@ class MailAutomationService:
             return None
         hint = self._normalize_match_value(project_hint)
         try:
-            projects = await self.youtrack_client.list_projects()
+            matches = await self.query_service.search_projects(project_hint, include_archived=True, limit=5)
         except Exception:
             logger.exception("Failed to list projects while resolving project hint '%s'.", project_hint)
             return None
+        if matches:
+            best = matches[0]
+            if best.confidence >= 0.55:
+                return best.project_id
 
+        projects = await self.youtrack_client.list_projects()
         exact_match = None
         partial_match = None
         for project in projects:
@@ -385,70 +399,6 @@ class MailAutomationService:
     def _normalize_match_value(self, value: str | None) -> str:
         normalized = unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode("ascii")
         return " ".join(normalized.lower().split())
-
-    def _planner_system_prompt(self) -> str:
-        return (
-            "You are YTBot acting as a planner for an IMAP automation caller.\n"
-            "You understand the whole email thread and must prepare a safe execution plan.\n"
-            "Do not call tools. Do not mention tools. Do not ask the caller to execute tool calls.\n"
-            "Return only valid JSON with these keys:\n"
-            "{"
-            '"request_text": string, '
-            '"workflow_mode": "youtrack"|"assist", '
-            '"assist_intent": "summarize"|"translate"|"explain"|"extract_actions"|"draft_reply"|"classify_for_youtrack"|"delegate"|"time_report"|null, '
-            '"admin_scope": boolean, '
-            '"customer_label": string|null, '
-            '"project_hint": string|null, '
-            '"project_id": string|null, '
-            '"issue_summary": string|null, '
-            '"issue_description": string|null, '
-            '"issue_assignee": string|null, '
-            '"delegate_to_name": string|null, '
-            '"delegate_to_email": string|null, '
-            '"delegate_subject": string|null, '
-            '"delegate_body": string|null, '
-            '"report_date_from": "YYYY-MM-DD"|null, '
-            '"report_date_to": "YYYY-MM-DD"|null, '
-            '"report_group_by": "project"|"issue"|"author"|null, '
-            '"report_author_hint": string|null, '
-            '"needs_clarification": boolean, '
-            '"clarification_question": string|null, '
-            '"reply_intent": "execute"|"clarify"|"ignore", '
-            '"reply_draft": string|null'
-            "}\n"
-            "Use workflow_mode='assist' when the email only asks for explanation, summary, translation, action extraction, or draft reply support.\n"
-            "Use assist_intent='delegate' when the sender asks you to remind, contact, notify, hand off, forward, or write to another person on their behalf. Do not create a YouTrack issue in that case.\n"
-            "Use assist_intent='time_report' when the sender asks for hours worked, timesheets, or a monthly/project summary of tracked time.\n"
-            "Use workflow_mode='youtrack' only when the sender explicitly asks to create/update/log/search something in YouTrack or when ticketing is clearly requested.\n"
-            "Set admin_scope=true for privileged operations such as advanced reporting, knowledge-base write/read requests with reserved content, archive/delete/project-level administration, or any operation that should require super-admin confirmation when requested by email.\n"
-            "request_text must contain the operational request as a standalone text ready for backend processing.\n"
-            "If you classify as delegate, you must extract the target person into delegate_to_name or delegate_to_email and prepare delegate_body as the actual outgoing email body for that person.\n"
-            "If the sender is asking you to write to a third person, do not set only reply_draft for the original sender: set assist_intent='delegate'.\n"
-            "If the request is a reporting request, set assist_intent='time_report' even if the sender uses words like 'riassunto' or 'summary'.\n"
-            "If the current email is only a clarification reply, merge it with the visible thread context into request_text.\n"
-            "Set project_hint when the user mentions a project by name but you are not certain about the exact YouTrack ID.\n"
-            "When the email asks to create a new issue, provide a concise issue_summary in Italian and a clean issue_description.\n"
-            "issue_summary must be 4-10 words, action-oriented, and suitable as a real YouTrack title.\n"
-            "issue_summary must not start with generic prefixes like 'Create new issue', 'Crea una issue', 'Apri ticket', or repeat project names unless necessary.\n"
-            "issue_summary must never contain full-sentence instructions, quoted email text, or the literal phrase 'con descrizione'.\n"
-            "issue_description should preserve the requested work as plain business requirements without mail-forward boilerplate.\n"
-            "issue_description should be 1 short paragraph or a compact bullet list, and must not restate the command 'crea/apri issue'.\n"
-            "If the email already contains a good explicit title and a separate body/description, keep that separation instead of paraphrasing the whole request.\n"
-            "Bad example issue_summary: 'crea un nuovo issue: Gestione avanzata permessi nel progetto EP-Projects con descrizione'.\n"
-            "Good example issue_summary: 'Gestione avanzata permessi'.\n"
-            "Bad example issue_description: 'crea un nuovo issue nel progetto EP-Projects con descrizione ...'.\n"
-            "Good example issue_description: 'Implementare una gestione avanzata dei permessi utente con ruoli e configurazioni granulari.'\n"
-            f"Use issue_assignee='{settings.youtrack_default_assignee}' for new issues unless the email clearly asks for someone else.\n"
-            "Never invent issue IDs, project IDs, or completed actions.\n"
-        )
-
-    def _planner_user_prompt(self, message: MailboxMessage) -> str:
-        return (
-            f"From: {message.sender}\n"
-            f"Subject: {message.subject or '(no subject)'}\n\n"
-            "Email body, including any quoted thread text if present:\n"
-            f"{message.text.strip()}\n"
-        )
 
     def _build_clarification_reply(self, message: MailboxMessage, preview, plan: MailExecutionPlan) -> str:
         context_text = self._clarification_context_text(message, plan)

@@ -31,6 +31,31 @@ Open points:
 - blockers, risks, or next steps
 ```
 
+## 2026-03-24 15:40
+
+Context:
+- The project needed to stop growing as a single monolith and start moving toward the agreed architecture of tool cores plus channel adapters, with PostgreSQL as the future operational state backend.
+
+Changes:
+- Added architectural bootstrap settings for `SERVICE_ROLE`, `STATE_BACKEND`, `DATABASE_URL`, and `EMAIL_ORCHESTRATOR_MODE`.
+- Introduced a storage abstraction that can persist operational records either to local JSON files or to PostgreSQL through a shared `state_store` table.
+- Refactored repositories onto the new storage abstraction without changing their service-facing interfaces.
+- Extracted email planning behavior into a dedicated orchestrator wrapper (`app/email_orchestrator.py`) backed by an external prompt asset at `prompts/email_channel_planner.md`.
+- Kept backward compatibility in the mail runner so legacy tests/fakes that still expose `generate_structured_reply(...)` continue to work.
+- Improved email-side project hint resolution so it reuses `QueryService.search_projects(...)` before falling back to raw project listing heuristics.
+- Added separate service entrypoints:
+- `services/youtrack_core/main.py`
+- `services/email_channel/main.py`
+- Added a dedicated email-channel FastAPI app with its own health endpoint and manual `POST /run-once` trigger for worker-style deployments.
+
+Verification:
+- Ran `python3 -m py_compile app/config.py app/storage.py app/repositories.py app/models.py app/email_orchestrator.py app/mail_agent.py app/dependencies.py app/email_channel_api.py app/main.py services/youtrack_core/main.py services/email_channel/main.py`.
+
+Open points:
+- `lada/` still needs the same architectural slice mirrored after the root implementation is finalized.
+- PostgreSQL migration/import utilities are not yet present; the new backend is a persistence abstraction and deploy contract, not a complete migration story yet.
+- Email and OpenWebUI still do not share the exact same tool-calling runtime path; this slice creates the correct channel boundary first.
+
 ## 2026-03-24 09:30
 
 Context:

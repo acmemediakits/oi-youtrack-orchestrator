@@ -1,5 +1,37 @@
 # Planning Features
 
+## 2026-03-24
+
+### Tool cores + channel adapters split
+
+- Status: in progress
+- Source: explicit architecture direction approved for implementation
+- Priority: high
+
+Goal:
+- Move the repo from a monolithic app into a monorepo with explicit service boundaries:
+- `youtrack_core`
+- `email_channel`
+- future `db_core`, `nextcloud_core`, `docgen_core`
+
+Current implementation slice:
+- service entrypoints now exist under `services/`
+- the email planner prompt has been extracted behind an orchestrator wrapper and prompt asset
+- mail runtime can be deployed separately from the tool-core API
+- state persistence now supports a `json|postgres` backend switch through a shared store abstraction
+
+Still missing:
+- dedicated panel/ops service extraction
+- cross-service auth/error envelope normalization
+- migration/import tooling for PostgreSQL
+- full parity so email uses the same tool-driven orchestration path as OpenWebUI instead of a JSON plan contract
+- service templates for the future `db_core`, `nextcloud_core`, and `docgen_core`
+
+Why this track matters:
+- it prevents email, tool APIs, panel, and future integrations from continuing to collapse into one growing process
+- it gives OpenWebUI a cleaner role as the single intelligence/orchestration layer
+- it lets future DB/Nextcloud/doc-generation capabilities ship as narrow services instead of new branches inside the current app
+
 ## 2026-03-23
 
 ### Mail thread state model

@@ -15,22 +15,22 @@ from app.models import (
     RuntimeConfig,
     WhitelistedUser,
 )
-from app.storage import JsonStore
+from app.storage import ModelStore
 
 
-class RequestRepository(JsonStore[NormalizedRequest]):
+class RequestRepository(ModelStore[NormalizedRequest]):
     def __init__(self) -> None:
-        super().__init__("requests.json", NormalizedRequest)
+        super().__init__("requests", NormalizedRequest)
 
 
-class PreviewRepository(JsonStore[ActionPreview]):
+class PreviewRepository(ModelStore[ActionPreview]):
     def __init__(self) -> None:
-        super().__init__("previews.json", ActionPreview)
+        super().__init__("previews", ActionPreview)
 
 
-class CommitRepository(JsonStore[CommitResult]):
+class CommitRepository(ModelStore[CommitResult]):
     def __init__(self) -> None:
-        super().__init__("commits.json", CommitResult)
+        super().__init__("commits", CommitResult)
 
     def find_by_preview_id(self, preview_id: str) -> CommitResult | None:
         for item in self.list_all():
@@ -73,9 +73,9 @@ class CustomerDirectoryRepository:
         return [CustomerRule.model_validate(item) for item in raw]
 
 
-class MailProcessingRepository(JsonStore[MailProcessingRecord]):
+class MailProcessingRepository(ModelStore[MailProcessingRecord]):
     def __init__(self) -> None:
-        super().__init__("mail_processing.json", MailProcessingRecord)
+        super().__init__("mail_processing", MailProcessingRecord)
 
     def find_by_message_id(self, message_id: str) -> MailProcessingRecord | None:
         for item in self.list_all():
@@ -84,9 +84,9 @@ class MailProcessingRepository(JsonStore[MailProcessingRecord]):
         return None
 
 
-class IssueSubscriptionRepository(JsonStore[IssueSubscription]):
+class IssueSubscriptionRepository(ModelStore[IssueSubscription]):
     def __init__(self) -> None:
-        super().__init__("issue_subscriptions.json", IssueSubscription)
+        super().__init__("issue_subscriptions", IssueSubscription)
 
     def find_by_issue_and_email(self, issue_id_readable: str, requester_email: str) -> IssueSubscription | None:
         normalized_email = requester_email.strip().lower()
@@ -96,9 +96,9 @@ class IssueSubscriptionRepository(JsonStore[IssueSubscription]):
         return None
 
 
-class RuntimeConfigRepository(JsonStore[RuntimeConfig]):
+class RuntimeConfigRepository(ModelStore[RuntimeConfig]):
     def __init__(self) -> None:
-        super().__init__("runtime_config.json", RuntimeConfig)
+        super().__init__("runtime_config", RuntimeConfig)
 
     def get_config(self) -> RuntimeConfig | None:
         return self.get("runtime")
@@ -107,9 +107,9 @@ class RuntimeConfigRepository(JsonStore[RuntimeConfig]):
         return self.upsert(config.id, config)
 
 
-class UserDirectoryRepository(JsonStore[WhitelistedUser]):
+class UserDirectoryRepository(ModelStore[WhitelistedUser]):
     def __init__(self) -> None:
-        super().__init__("whitelisted_users.json", WhitelistedUser)
+        super().__init__("whitelisted_users", WhitelistedUser)
 
     def find_by_email(self, email: str) -> WhitelistedUser | None:
         normalized = email.strip().lower()
@@ -122,6 +122,6 @@ class UserDirectoryRepository(JsonStore[WhitelistedUser]):
         self.delete(user_id)
 
 
-class AdminApprovalRepository(JsonStore[AdminApproval]):
+class AdminApprovalRepository(ModelStore[AdminApproval]):
     def __init__(self) -> None:
-        super().__init__("admin_approvals.json", AdminApproval)
+        super().__init__("admin_approvals", AdminApproval)

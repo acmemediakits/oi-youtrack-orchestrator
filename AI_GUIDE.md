@@ -54,6 +54,9 @@ Implemented today:
 - long-term mailbox thread memory is now tracked as a planned feature in `PLANNING_FEATURES.md`, separate from resolved bug fixes
 - the OpenAPI surface now explicitly exposes project metadata, issue fields, issue transitions, direct issue assignee updates, direct issue state updates, and a generic `resolve-value` endpoint so the model can inspect/write metadata more safely
 - root changes are mirrored in `lada/` so deployment and local source stay aligned
+- the repo now contains explicit multi-service entrypoints under `services/`, with `youtrack_core` and `email_channel` split as first-class deployable boundaries
+- the email channel now routes planning through a dedicated orchestrator wrapper plus external prompt asset, instead of keeping the planner prompt hardcoded inside the mail runner
+- operational state storage now supports a backend switch between local JSON files and PostgreSQL-compatible persistence
 
 Not yet complete:
 
@@ -74,6 +77,8 @@ Not yet complete:
 - a documented operator workaround or UI note for Roundcube folder visibility differences versus Aurora
 - stronger persistent thread-state storage beyond quoted email context; current clarification improvement is transport-level, not full conversation memory
 - richer direct Knowledge Base write/read/update endpoints are still incomplete even after the OpenAPI surface expansion
+- the email channel still uses a compatibility JSON-plan contract; full tool-driven cross-channel parity with OpenWebUI is still a next step
+- PostgreSQL is scaffolded as the target state backend, but migration/import flows and dedicated SQL-backed repositories are not yet fully specialized beyond the shared state-store abstraction
 
 ## Target Outcomes
 

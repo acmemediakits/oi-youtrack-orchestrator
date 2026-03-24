@@ -66,12 +66,13 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    try:
-        get_mailbox_service().ensure_runtime_folders()
-    except Exception:
-        logger.exception("IMAP folder bootstrap failed during startup.")
     runner = get_mail_automation_runner()
-    runner.start()
+    if settings.run_mail_worker:
+        try:
+            get_mailbox_service().ensure_runtime_folders()
+        except Exception:
+            logger.exception("IMAP folder bootstrap failed during startup.")
+        runner.start()
     try:
         yield
     finally:
@@ -140,7 +141,7 @@ def _is_trusted_assistant_actor(actor: WhitelistedUser) -> bool:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "service_role": settings.service_role, "state_backend": settings.state_backend}
 
 
 @app.get("/panel/login", response_class=HTMLResponse)

@@ -18,6 +18,9 @@ def _env_user_type(name: str, default: UserType) -> UserType:
 
 @dataclass(slots=True)
 class Settings:
+    service_role: str = os.getenv("SERVICE_ROLE", "monolith").strip().lower()
+    state_backend: str = os.getenv("STATE_BACKEND", "json").strip().lower()
+    database_url: str = os.getenv("DATABASE_URL", "").strip()
     app_env: str = os.getenv("APP_ENV", "development")
     verbose: bool = os.getenv("VERBOSE", "false").lower() == "true"
     data_dir: Path = Path(os.getenv("APP_DATA_DIR", "./data"))
@@ -66,12 +69,21 @@ class Settings:
     openwebui_trusted_actor_email: str = os.getenv("OPENWEBUI_TRUSTED_ACTOR_EMAIL", "ytbot@local")
     openwebui_trusted_actor_name: str = os.getenv("OPENWEBUI_TRUSTED_ACTOR_NAME", "YTbot")
     openwebui_trusted_actor_role: UserType = _env_user_type("OPENWEBUI_TRUSTED_ACTOR_ROLE", UserType.power)
+    email_orchestrator_mode: str = os.getenv("EMAIL_ORCHESTRATOR_MODE", "openwebui").strip().lower()
 
     def build_imap_ssl_context(self) -> ssl.SSLContext:
         context = ssl.create_default_context()
         if self.mailbox_imap_allow_legacy_tls:
             context.set_ciphers("DEFAULT@SECLEVEL=1")
         return context
+
+    @property
+    def run_mail_worker(self) -> bool:
+        return self.service_role in {"monolith", "email_channel"}
+
+    @property
+    def expose_tool_core_api(self) -> bool:
+        return self.service_role in {"monolith", "tool_core"}
 
 
 settings = Settings()
