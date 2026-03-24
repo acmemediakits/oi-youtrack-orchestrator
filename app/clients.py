@@ -59,7 +59,22 @@ class YouTrackClient:
         return await self._request(
             "GET",
             "/api/admin/projects",
-            params={"fields": "id,shortName,name,archived"},
+            params={"fields": "id,shortName,name,description,archived"},
+        )
+
+    async def get_project(self, project_id: str) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            f"/api/admin/projects/{project_id}",
+            params={"fields": "id,shortName,name,description,archived"},
+        )
+
+    async def update_project(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/api/admin/projects/{project_id}",
+            params={"fields": "id,shortName,name,description,archived"},
+            json_body=payload,
         )
 
     async def create_issue(self, payload: dict[str, Any]) -> dict[str, Any]:

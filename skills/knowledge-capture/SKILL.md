@@ -30,6 +30,11 @@ When the content comes from email, use the full body to determine whether the no
 - If the content clearly belongs to one client/project, keep it there.
 - If the destination is unclear, ask before writing.
 - Preserve commands and code snippets exactly when possible.
+- Prefer Markdown structure for knowledge content when it improves readability:
+  - short intro paragraph
+  - bullet list for facts or steps
+  - fenced code blocks for commands/snippets
+  - meaningful links on their own lines when useful
 
 ## Preferred tool sequence
 

@@ -24,7 +24,7 @@ Notes:
 
 ### Issue creation flow: project assignment is valid, assignee write is the risky step
 
-- Status: resolved
+- Status: review pending
 - Area: YouTrack commit flow / issue creation
 - Reporter: user
 - Environment: API commit flow for email/manual issue creation
@@ -45,6 +45,7 @@ Verification against official documentation:
 Evidence in this codebase:
 - `app/services.py` creates the issue with `project: {"id": operation.project_id}` and only afterwards calls `_assign_issue(...)`.
 - `_assign_issue(...)` discovers candidate user fields dynamically and retries with multiple payload shapes (`login`, `name`, `fullName`), which is a signal that the assignment step is the unstable part, not the project binding itself.
+- Live evidence captured from the email workflow shows the backend still returning: `incompatible-issue-custom-field-name-Assignee` while reporting "Attempted fields: Assignee".
 
 Likely root cause:
 - The risky behavior is not “assigning the project during save”; that part is required by the API.
@@ -62,13 +63,15 @@ Possible solution:
 - 2. reconnect using that issue id and write the assignee only after resolving the exact project field metadata and the accepted user identifier for that project.
 - Alternative: when field metadata is already known, set `Assignee` directly in the initial `customFields` payload and avoid heuristic retries after creation.
 
-Resolution notes:
-- The backend now reads the real user bundle metadata for the assignee field and resolves actual assignable users instead of treating a project/team label as the final assignee value.
-- The assignment endpoint resolves against issue field metadata first and writes the matched user identifier, which aligned the API behavior with the YouTrack UI.
+Review notes:
+- A later live review of the target project settings showed that the expected assignee custom field had not actually been created on that project.
+- This means the reported production failure may have been caused by project configuration drift rather than an unresolved backend defect.
+- Keep this item in review-pending state until the same email flow is revalidated end-to-end on projects where the assignee field is correctly configured.
 
 Tracking notes for agents:
 - Do not spend time removing `project.id` from create requests unless new evidence appears.
 - Focus investigation on field discovery, per-project assignee field naming, accepted user identity (`login` vs displayed name), and error visibility returned by YouTrack.
+- Re-test specifically from the email flow, not only from direct/manual commit flows, after confirming the project custom field is present in YouTrack.
 
 ### Email thread context is lost across clarification replies
 
@@ -117,15 +120,21 @@ Observed behavior:
 - The assistant still produces summaries and descriptions that do not reliably make sense.
 - It does not consistently distinguish between a short actionable title and a fuller descriptive body.
 - It under-interprets the meaning of the source thread and tends to mirror input text instead of synthesizing a useful ticket.
+- Even when the issue is materially correct, the generated description is often dumped as a dense plain-text block instead of a readable Markdown structure that takes advantage of YouTrack formatting support.
 
 Expected behavior:
 - `summary` should be short, action-oriented, and suitable as a real YouTrack issue title.
 - `description` should preserve the business/operational request with enough detail to execute the work.
 - The model should infer intent from the whole thread, not just paraphrase the latest message.
+- `description` should be formatted as clean Markdown for YouTrack, using structure when helpful: short intro, bullet list of requests, links on separate meaningful anchors, and explicit notes/open questions when present.
 
 Evidence in this codebase:
 - The planner prompt contains rules for concise `issue_summary` and "clean issue_description", but there is no stronger structural validation that rejects poor title/body separation before commit.
 - The preview/commit flow accepts AI-provided summary/description with limited semantic quality control once the plan is normalized.
+- Live issue output confirms that the text currently lands as a minimally formatted paragraph even when the content would benefit from Markdown sections/lists.
+
+Source:
+- JetBrains YouTrack Markdown Syntax for issues and issue descriptions: https://www.jetbrains.com/help/youtrack/server/youtrack-markdown-syntax-issues.html
 
 Impact:
 - Low-quality task creation reduces trust in the automation.
@@ -134,6 +143,12 @@ Impact:
 
 Possible solution:
 - Improve prompting and examples so the model sees stronger distinctions between title and description.
+- Add explicit formatting guidance for YouTrack Markdown in the planner and/or post-processing layer.
+- Prefer structured descriptions by default, for example:
+- short problem statement
+- numbered or bulleted requested interventions
+- relevant links under a dedicated section
+- constraints / expected outcome
 - Add lightweight validation heuristics before commit, for example rejecting titles that are too long, too generic, or too similar to the full description.
 - Consider loosening over-constrained instructions if they are pushing the model toward sterile paraphrase rather than useful interpretation.
 - If future thread persistence is added, use the whole conversation and downstream outcomes as context for better ticket drafting.
@@ -142,3 +157,44 @@ Tracking notes for agents:
 - This is no longer tracked as a pure bug fix.
 - It is now part of planned product work on prompt/agent quality and metadata-aware planning.
 - Any future implementation should be evaluated on real thread-to-ticket examples, not only synthetic unit cases.
+- Issue and knowledge descriptions should be treated as Markdown-capable fields; worklog comments should remain plain text by default.
+
+### Tooling gap: missing endpoint to archive and restore projects
+
+- Status: resolved
+- Area: API / tool surface / project administration
+- Reporter: user
+- Environment: assistant/tool usage for project lifecycle management
+
+Observed behavior:
+- The current tool surface does not expose an endpoint/action to archive or restore a YouTrack project.
+- As a consequence, the assistant reports that project archiving/reactivation is not available programmatically even though YouTrack supports project updates through its REST API.
+
+Expected behavior:
+- The tool should expose a safe administrative endpoint to archive a project.
+- The tool should expose the corresponding endpoint to restore a previously archived project.
+- The assistant should be able to use these actions instead of falling back to manual UI instructions when the caller has sufficient permissions.
+
+Verification against official documentation:
+- JetBrains documents `POST /api/admin/projects/{projectID}` as the update operation for a specific project.
+- The `Project` entity includes an `archived` boolean attribute, and project attributes are updated by providing them in the POST body.
+- From this, it is reasonable to infer that archive/restore can be implemented by updating `archived` to `true` or `false` on the specific project resource.
+
+Source:
+- JetBrains YouTrack Developer Portal, "Projects": https://www.jetbrains.com/help/youtrack/devportal/resource-api-admin-projects.html
+- JetBrains YouTrack Developer Portal, "Operations with Specific Project": https://www.jetbrains.com/help/youtrack/devportal/operations-api-admin-projects.html
+- JetBrains YouTrack Cloud Documentation, "Archive a Project / Restore a Project": https://www.jetbrains.com/help/youtrack/cloud/archiving-a-project.html
+
+Possible solution:
+- Add an API endpoint that wraps `POST /api/admin/projects/{projectID}` with `{"archived": true}`.
+- Add the symmetric restore endpoint with `{"archived": false}`.
+- Guard both endpoints behind the appropriate admin permission/capability checks.
+- Return updated project metadata so callers can confirm the state transition immediately.
+
+Resolution notes:
+- The tool surface now exposes project metadata editing and project archive-state updates through dedicated project endpoints.
+- Archive and restore are handled by updating the project `archived` attribute and returning refreshed project metadata.
+
+Tracking notes for agents:
+- This is a missing capability in the tool surface, not evidence that YouTrack lacks the underlying API.
+- When implementing, verify that permission checks and user-facing wording distinguish clearly between archive, restore, and delete.

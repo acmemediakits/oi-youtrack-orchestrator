@@ -223,6 +223,11 @@ Goal:
 - `KnowledgeBase`
 - with the deliberate exception of destructive `DELETE` flows.
 
+Current implementation slice:
+- project metadata editing endpoint so the assistant can write project descriptions as context hints
+- project archive/restore endpoint through project state update
+- project search responses now include a `context` attribute and use it in confidence scoring
+
 Assessment of current coverage:
 - `Project`
 - already exposed:

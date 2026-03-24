@@ -91,6 +91,37 @@ class FakeYouTrackClient:
                 },
             ]
         }
+        self.projects = [
+            {
+                "id": "SEA",
+                "shortName": "SEA",
+                "name": "SEA",
+                "description": "Archivio storico SEA.",
+                "archived": True,
+            },
+            {
+                "id": "ZSEA",
+                "shortName": "ZSEA",
+                "name": "SEA Supporto",
+                "description": "Supporto continuativo per SEA con attivita operative e richieste correnti.",
+                "archived": False,
+            },
+            {
+                "id": "FUN",
+                "shortName": "FJ",
+                "name": "FJ Supporto",
+                "description": "Progetto di supporto per Funky Junk.",
+                "archived": False,
+            },
+            {
+                "id": "ZD",
+                "shortName": "ZD",
+                "name": "ZD Supporto",
+                "description": "Zampediverse, alias ZD e Zampe, attivita isolate da conteggiare a consuntivo.",
+                "archived": False,
+            },
+            {"id": "0-7", "shortName": "ES", "name": "Stefano Leo", "description": "Cliente Stefano Leo.", "archived": False},
+        ]
 
     async def create_issue(self, payload):
         self.issue_counter += 1
@@ -219,12 +250,18 @@ class FakeYouTrackClient:
         return {"id": item_id, **payload}
 
     async def list_projects(self):
-        return [
-            {"id": "SEA", "shortName": "SEA", "name": "SEA", "archived": True},
-            {"id": "ZSEA", "shortName": "ZSEA", "name": "SEA Supporto", "archived": False},
-            {"id": "FUN", "shortName": "FJ", "name": "FJ Supporto", "archived": False},
-            {"id": "0-7", "shortName": "ES", "name": "Stefano Leo"},
-        ]
+        return self.projects
+
+    async def get_project(self, project_id):
+        for project in self.projects:
+            if project["id"] == project_id or project["shortName"] == project_id or project["name"] == project_id:
+                return project
+        raise RuntimeError(f"Unknown project {project_id}")
+
+    async def update_project(self, project_id, payload):
+        project = await self.get_project(project_id)
+        project.update(payload)
+        return project
 
     async def search_issues(self, query, limit=20):
         issues = [
@@ -476,6 +513,22 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("crea un nuovo issue", operation.summary.lower())
         self.assertNotIn("con descrizione", operation.summary.lower())
 
+    def test_issue_description_preserves_markdown_bullets(self):
+        preview = self.preview_service.build_preview(
+            PreviewInput(
+                text=(
+                    'feature: "Nuovo layout checkout" con descrizione: "Aggiornare checkout.\n'
+                    '- migliorare riepilogo ordine\n'
+                    '- evidenziare costi spedizione\n'
+                    '- aggiungere link alle condizioni"'
+                ),
+                project_id="FUN",
+            )
+        )
+        operation = preview.issue_operations[0]
+        self.assertIn("- migliorare riepilogo ordine", operation.description)
+        self.assertIn("- evidenziare costi spedizione", operation.description)
+
     def test_runtime_config_service_persists_editable_settings(self):
         config = self.runtime_config_service.update(
             verbose=True,
@@ -530,6 +583,37 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         normalized = service._normalize_execution_plan(message, plan)
         self.assertEqual(normalized.issue_summary, "Gestione avanzata permessi")
         self.assertEqual(normalized.issue_description, "Implementare una gestione avanzata dei permessi utente.")
+
+    def test_mail_plan_normalization_preserves_markdown_bullets(self):
+        service = MailAutomationService(
+            mailbox=FakeMailboxService([]),
+            openwebui=FakeOpenWebUIClient(),
+            processed=self.mail_processing,
+            request_service=self.request_service,
+            preview_service=self.preview_service,
+            commit_service=self.commit_service,
+            youtrack_client=self.youtrack_client,
+            query_service=self.query_service,
+            issue_subscription_service=IssueSubscriptionService(self.issue_subscriptions, self.youtrack_client, FakeMailboxService([])),
+        )
+        message = MailboxMessage(
+            message_id="m-markdown",
+            mailbox_uid="11",
+            sender="ops@trusted.example",
+            subject="Nuovo task",
+            text="Serve un task formattato bene.",
+            received_at=datetime.now(timezone.utc),
+        )
+        plan = MailExecutionPlan(
+            request_text="Serve un task formattato bene.",
+            workflow_mode="youtrack",
+            issue_summary="Nuovo layout checkout",
+            issue_description="Aggiornare checkout.\n* migliorare riepilogo ordine\n* evidenziare costi spedizione",
+            reply_intent="execute",
+        )
+        normalized = service._normalize_execution_plan(message, plan)
+        self.assertIn("- migliorare riepilogo ordine", normalized.issue_description or "")
+        self.assertIn("- evidenziare costi spedizione", normalized.issue_description or "")
 
     async def test_assign_issue_prefers_exact_configured_field_name(self):
         previous_field_name = settings.youtrack_assignee_field_name
@@ -717,6 +801,27 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         results = await self.query_service.search_projects("sea", limit=2)
         self.assertEqual(results[0].project_id, "ZSEA")
         self.assertFalse(results[0].archived)
+
+    async def test_query_service_uses_project_context_for_match(self):
+        results = await self.query_service.search_projects("zampediverse", limit=3)
+        self.assertEqual(results[0].project_id, "ZD")
+        self.assertIn("Zampediverse", results[0].context or "")
+
+    async def test_query_service_updates_project_description(self):
+        metadata = await self.query_service.update_project_description(
+            "ZD",
+            "Contesto Zampediverse. Alias: ZD, Zampe. Dominio: zampediverse.com.",
+        )
+        self.assertIsNotNone(metadata)
+        assert metadata is not None
+        self.assertIn("Zampediverse", metadata.description or "")
+        self.assertIn("Zampediverse", metadata.context or "")
+
+    async def test_query_service_updates_project_archived_state(self):
+        metadata = await self.query_service.update_project_archived_state("ZD", True)
+        self.assertIsNotNone(metadata)
+        assert metadata is not None
+        self.assertTrue(metadata.archived)
 
     async def test_query_service_lists_only_open_funky_issues(self):
         issues = await self.query_service.list_project_issues("FUN", only_open=True, limit=10)

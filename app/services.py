@@ -82,6 +82,30 @@ def normalize_text(text: str) -> str:
     return " ".join(text.strip().split())
 
 
+def normalize_markdown_text(text: str) -> str:
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    normalized_lines: list[str] = []
+    previous_blank = False
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if not line.strip():
+            if not previous_blank and normalized_lines:
+                normalized_lines.append("")
+            previous_blank = True
+            continue
+        stripped = line.strip()
+        if re.match(r"^[-*]\s+", stripped):
+            normalized_lines.append(f"- {stripped[2:].strip()}")
+        elif re.match(r"^\d+\.\s+", stripped):
+            normalized_lines.append(stripped)
+        elif stripped.startswith(">"):
+            normalized_lines.append(stripped)
+        else:
+            normalized_lines.append(" ".join(stripped.split()))
+        previous_blank = False
+    return "\n".join(normalized_lines).strip()
+
+
 def normalize_match_token(text: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").strip().lower()).strip()
 
@@ -606,7 +630,7 @@ class PreviewService:
                         project_id=project_match.selected_project_id or settings.personal_kb_project,
                         folder=settings.personal_kb_folder if "person" in lowered or "miei" in lowered else None,
                         title=self._knowledge_title(chunk),
-                        content=chunk,
+                        content=normalize_markdown_text(chunk),
                         tags=["personale"] if "personal" in lowered or "miei" in lowered else [],
                         is_personal="personal" in lowered or "miei" in lowered,
                         needs_confirmation=project_match.status != "matched" and "personal" not in lowered and "miei" not in lowered,
@@ -757,7 +781,7 @@ class PreviewService:
         return stripped[:120] if stripped else "Attivita' cliente"
 
     def _clean_issue_description(self, text: str, summary: str) -> str:
-        cleaned = normalize_text(text).strip().strip('"\' ')
+        cleaned = normalize_markdown_text(text).strip().strip('"\' ')
         cleaned = re.sub(r"^(crea|apri|genera)\s+(un\s+)?(nuov[ao]\s+)?(issue|ticket)\s*:?\s*", "", cleaned, flags=re.IGNORECASE)
         if summary:
             summary_patterns = [
@@ -769,9 +793,9 @@ class PreviewService:
         cleaned = re.sub(r"^\s*(nel progetto\s+[^\"]+?)\s*(con descrizione\s*:)?\s*", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"^descrizione\s*:\s*", "", cleaned, flags=re.IGNORECASE)
         cleaned = cleaned.strip().strip('"\' ')
-        cleaned = normalize_text(cleaned)
+        cleaned = normalize_markdown_text(cleaned)
         if not cleaned or normalize_match_token(cleaned) == normalize_match_token(summary):
-            cleaned = normalize_text(text).strip()
+            cleaned = normalize_markdown_text(text).strip()
         return cleaned
 
     def _knowledge_title(self, chunk: str) -> str:
@@ -813,11 +837,13 @@ class QueryService:
                 pass
             score = 0.0
             reasons: list[str] = []
+            matched_rule = self._matched_project_rule(project)
             project_values = [
                 (project.get("shortName") or "").lower(),
                 (project.get("name") or "").lower(),
                 (project.get("id") or "").lower(),
             ]
+            context = self._project_context(project, matched_rule)
             if normalized_query in project_values:
                 score += 0.8
                 reasons.append("exact project match")
@@ -825,16 +851,23 @@ class QueryService:
                 score += 0.55
                 reasons.append("partial project match")
 
-            for rule in self.directory.list_all():
-                aliases = [rule.customer_label, *rule.aliases]
+            if matched_rule:
+                aliases = [matched_rule.customer_label, *matched_rule.aliases]
                 if any(normalized_query == alias.lower() for alias in aliases):
-                    if project.get("id") == rule.default_project_id or project.get("shortName") in rule.project_ids:
-                        score += 0.95
-                        reasons.append(f"customer alias '{rule.customer_label}' matched")
+                    score += 0.95
+                    reasons.append(f"customer alias '{matched_rule.customer_label}' matched")
                 elif any(normalized_query in alias.lower() for alias in aliases):
-                    if project.get("id") == rule.default_project_id or project.get("shortName") in rule.project_ids:
-                        score += 0.65
-                        reasons.append(f"customer alias '{rule.customer_label}' partially matched")
+                    score += 0.65
+                    reasons.append(f"customer alias '{matched_rule.customer_label}' partially matched")
+
+            normalized_context = normalize_match_token(context)
+            if normalized_query and normalized_context:
+                if normalized_query == normalized_context:
+                    score += 0.75
+                    reasons.append("project context exact match")
+                elif normalized_query in normalized_context:
+                    score += 0.45
+                    reasons.append("project context matched")
 
             if not archived:
                 score += 0.05
@@ -849,6 +882,7 @@ class QueryService:
                     project_id=project.get("id"),
                     short_name=project.get("shortName") or project.get("id"),
                     name=project.get("name") or project.get("shortName") or project.get("id"),
+                    context=context,
                     archived=archived,
                     confidence=min(score, 1.0),
                     reason=", ".join(dict.fromkeys(reasons)),
@@ -862,25 +896,27 @@ class QueryService:
         project = await self._project_details(project_id)
         if not project:
             return None
-        matched_rule = None
-        for rule in self.directory.list_all():
-            if (
-                project.get("id") == rule.default_project_id
-                or project.get("id") in rule.project_ids
-                or project.get("shortName") in rule.project_ids
-            ):
-                matched_rule = rule
-                break
+        matched_rule = self._matched_project_rule(project)
         return ProjectMetadata(
             project_id=project.get("id"),
             short_name=project.get("shortName") or project.get("id"),
             name=project.get("name") or project.get("shortName") or project.get("id"),
+            description=project.get("description"),
+            context=self._project_context(project, matched_rule),
             archived=bool(project.get("archived")),
             aliases=list(matched_rule.aliases) if matched_rule else [],
             domains=list(matched_rule.domains) if matched_rule else [],
             default_for_customer=matched_rule.customer_label if matched_rule else None,
             reason="customer directory rule matched" if matched_rule else None,
         )
+
+    async def update_project_description(self, project_id: str, description: str) -> ProjectMetadata | None:
+        await self.youtrack_client.update_project(project_id, {"description": description.strip()})
+        return await self.get_project_metadata(project_id)
+
+    async def update_project_archived_state(self, project_id: str, archived: bool) -> ProjectMetadata | None:
+        await self.youtrack_client.update_project(project_id, {"archived": archived})
+        return await self.get_project_metadata(project_id)
 
     async def list_project_issues(
         self,
@@ -1161,11 +1197,38 @@ class QueryService:
         return project.get("shortName") or project.get("id") or project_id
 
     async def _project_details(self, project_id: str) -> dict | None:
-        projects = await self.youtrack_client.list_projects()
-        for project in projects:
-            if project.get("id") == project_id or project.get("shortName") == project_id or project.get("name") == project_id:
-                return project
+        try:
+            return await self.youtrack_client.get_project(project_id)
+        except Exception:
+            projects = await self.youtrack_client.list_projects()
+            for project in projects:
+                if project.get("id") == project_id or project.get("shortName") == project_id or project.get("name") == project_id:
+                    return project
+            return None
+
+    def _matched_project_rule(self, project: dict):
+        for rule in self.directory.list_all():
+            if (
+                project.get("id") == rule.default_project_id
+                or project.get("id") in rule.project_ids
+                or project.get("shortName") in rule.project_ids
+            ):
+                return rule
         return None
+
+    def _project_context(self, project: dict, matched_rule) -> str | None:
+        parts: list[str] = []
+        description = (project.get("description") or "").strip()
+        if description:
+            parts.append(description)
+        if matched_rule:
+            alias_text = ", ".join([matched_rule.customer_label, *matched_rule.aliases]).strip(", ")
+            if alias_text:
+                parts.append(f"Aliases: {alias_text}")
+            if matched_rule.domains:
+                parts.append(f"Domains: {', '.join(matched_rule.domains)}")
+        context = " | ".join(part for part in parts if part)
+        return context or None
 
 
 @dataclass(slots=True)
@@ -1290,7 +1353,7 @@ class CommitService:
                 response = await self.youtrack_client.create_article(
                     {
                         "summary": operation.title,
-                        "content": operation.content,
+                        "content": normalize_markdown_text(operation.content),
                         "project": {"id": operation.project_id or settings.personal_kb_project},
                     }
                 )

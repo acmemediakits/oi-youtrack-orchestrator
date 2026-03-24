@@ -31,6 +31,29 @@ Open points:
 - blockers, risks, or next steps
 ```
 
+## 2026-03-24 09:30
+
+Context:
+- The project tracking layer needed to grow beyond issue-only tooling so YTBot could write project descriptions as context hints, change project archived state, and use richer project context during project search.
+
+Changes:
+- Added project metadata write support through `POST /projects/{project_id}/edit` for updating project descriptions.
+- Added project archive/restore support through `POST /projects/{project_id}/state` using the project `archived` attribute.
+- Extended project models and search results so `GET /projects/search` now returns a `context` field and uses that context in confidence scoring.
+- Extended the YouTrack client to read/update project `description` and `archived` metadata.
+- Updated drafting behavior so issue descriptions and knowledge-base content preserve Markdown structure instead of being flattened to plain text, while keeping worklog comments as simple text.
+- Synced the same code changes into `lada/` after the subtree became readable again.
+- Reclassified the assignee regression item in `BUG_LOG.md` to `review pending` after live inspection showed the expected assignee custom field was missing from the affected project configuration.
+
+Verification:
+- Ran `python3 -m py_compile app/models.py app/clients.py app/services.py app/main.py app/mail_agent.py tests/test_services.py`.
+- Ran `python3 -m py_compile lada/app/models.py lada/app/clients.py lada/app/services.py lada/app/main.py lada/app/mail_agent.py lada/tests/test_services.py`.
+- Added/updated focused tests for project context scoring, project description update, project archive-state update, and Markdown-preserving issue-description normalization.
+
+Open points:
+- The assignee email-flow item still needs end-to-end revalidation on a project where the relevant custom field is actually configured.
+- The new project endpoints and enriched search response still need live rebuild/redeploy before BrowserOS/Open WebUI can exercise them.
+
 ## 2026-03-23 11:10
 
 Context:

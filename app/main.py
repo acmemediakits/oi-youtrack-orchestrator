@@ -49,6 +49,8 @@ from app.models import (
     ResolveValueResult,
     RuntimeMailboxFolders,
     PreviewInput,
+    ProjectArchiveStateInput,
+    ProjectEditInput,
     ProjectSearchResult,
     TimeTrackingSummary,
     WhitelistedUser,
@@ -390,6 +392,56 @@ async def get_project_metadata(project_id: str, x_actor_email: str | None = Head
     service = get_query_service()
     try:
         metadata = await service.get_project_metadata(project_id)
+        if not metadata:
+            raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
+        return metadata
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post(
+    "/projects/{project_id}/edit",
+    summary="Edit project metadata",
+    description="Update project metadata such as the project description so the assistant can use it as context during project resolution.",
+    response_model=ProjectMetadata,
+)
+async def edit_project_metadata(
+    project_id: str,
+    payload: ProjectEditInput,
+    x_actor_email: str | None = Header(default=None),
+) -> ProjectMetadata:
+    actor = _resolve_actor(x_actor_email)
+    _assert_capability(actor, "admin_scope_api")
+    service = get_query_service()
+    try:
+        metadata = await service.update_project_description(project_id, payload.description)
+        if not metadata:
+            raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
+        return metadata
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post(
+    "/projects/{project_id}/state",
+    summary="Archive or restore a project",
+    description="Update the archived state of a YouTrack project. Use archived=true to archive and archived=false to restore.",
+    response_model=ProjectMetadata,
+)
+async def update_project_state(
+    project_id: str,
+    payload: ProjectArchiveStateInput,
+    x_actor_email: str | None = Header(default=None),
+) -> ProjectMetadata:
+    actor = _resolve_actor(x_actor_email)
+    _assert_capability(actor, "admin_scope_api")
+    service = get_query_service()
+    try:
+        metadata = await service.update_project_archived_state(project_id, payload.archived)
         if not metadata:
             raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
         return metadata

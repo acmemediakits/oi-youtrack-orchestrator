@@ -45,6 +45,7 @@ class ProjectSearchResult(BaseModel):
     project_id: str
     short_name: str
     name: str
+    context: str | None = None
     archived: bool = False
     confidence: float = Field(ge=0, le=1)
     reason: str
@@ -54,11 +55,21 @@ class ProjectMetadata(BaseModel):
     project_id: str
     short_name: str
     name: str
+    description: str | None = None
+    context: str | None = None
     archived: bool = False
     aliases: list[str] = Field(default_factory=list)
     domains: list[str] = Field(default_factory=list)
     default_for_customer: str | None = None
     reason: str | None = None
+
+
+class ProjectEditInput(BaseModel):
+    description: str
+
+
+class ProjectArchiveStateInput(BaseModel):
+    archived: bool
 
 
 class ProjectMatch(BaseModel):

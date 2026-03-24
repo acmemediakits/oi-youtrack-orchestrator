@@ -627,11 +627,32 @@ class MailAutomationService:
         if summary:
             cleaned = re.sub(rf'^"{re.escape(summary)}"\s*', "", cleaned, flags=re.IGNORECASE)
             cleaned = re.sub(rf"^{re.escape(summary)}\s*", "", cleaned, flags=re.IGNORECASE)
-        cleaned = " ".join(cleaned.split())
+        cleaned = self._normalize_markdown_text(cleaned)
         if not cleaned or cleaned.lower().startswith(("crea ", "apri ", "genera ")):
-            fallback = request_text.strip()
+            fallback = self._normalize_markdown_text(request_text.strip())
             return fallback or None
         return cleaned
+
+    def _normalize_markdown_text(self, text: str | None) -> str:
+        lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        normalized_lines: list[str] = []
+        previous_blank = False
+        for raw_line in lines:
+            line = raw_line.rstrip()
+            if not line.strip():
+                if not previous_blank and normalized_lines:
+                    normalized_lines.append("")
+                previous_blank = True
+                continue
+            stripped = line.strip()
+            if re.match(r"^[-*]\s+", stripped):
+                normalized_lines.append(f"- {stripped[2:].strip()}")
+            elif re.match(r"^\d+\.\s+", stripped):
+                normalized_lines.append(stripped)
+            else:
+                normalized_lines.append(" ".join(stripped.split()))
+            previous_blank = False
+        return "\n".join(normalized_lines).strip()
 
     def _enforce_mail_permissions(self, message: MailboxMessage, user, plan: MailExecutionPlan) -> None:
         if not self.permissions or not self.user_directory:

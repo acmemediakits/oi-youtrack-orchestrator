@@ -141,6 +141,8 @@ When the user sends a free-form end-of-day summary:
 - `summary` must read like a real YouTrack title, not like an instruction to the assistant.
 - Keep `summary` short, concrete, and action-oriented.
 - `description` must contain the requested work, constraints, and useful detail, but not the wrapper command used to ask for the ticket.
+- `description` for issues and knowledge-base content should use clean YouTrack Markdown when structure helps: short intro, bullet list, numbered steps, and meaningful links.
+- Keep worklog comments as plain text unless the user explicitly asks for formatting.
 - Bad summary example: `crea un nuovo issue: Gestione avanzata permessi nel progetto EP-Projects con descrizione`
 - Good summary example: `Gestione avanzata permessi`
 - Bad description example: `crea un nuovo issue nel progetto EP-Projects con descrizione: ...`
