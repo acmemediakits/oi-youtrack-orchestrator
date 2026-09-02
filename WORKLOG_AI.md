@@ -31,6 +31,66 @@ Open points:
 - blockers, risks, or next steps
 ```
 
+## 2026-09-02 11:30
+
+Context:
+- The project needs to move into a broader shared-agent initiative without losing implementation history, operational knowledge, or unresolved architectural decisions.
+
+Changes:
+- Added `HANDOFF.md` as the canonical transfer document for another agent or team.
+- Classified GitHub history as the source of truth and rejected a raw workspace ZIP because it could include runtime data, Git internals, local artifacts, or secrets.
+- Included the broader `AgentChatNorris.md` product vision in the transfer set.
+- Redacted the dedicated PostgreSQL credential from this worklog; connection secrets must remain outside Git.
+
+Verification:
+- Ran syntax compilation across application, service entrypoints, and tests.
+- Ran a repository secret-pattern scan; only placeholder values remain in `.env.example`.
+- Full unit tests remain unavailable in the current global Python environment because `pydantic` and `fastapi` are not installed.
+
+Open points:
+- Rotate the dedicated PostgreSQL password because it previously appeared in local operational context, then update only the deployment secret source.
+- Revalidate the Lada runtime before relying on the last known-good state recorded on 2026-03-31.
+
+## 2026-03-31 12:10
+
+Context:
+- The email channel had started enforcing whitelist/RBAC/admin-approval logic before that permission layer was actually configured for the current development/demo phase.
+- Recent mailbox tests showed that these checks were blocking valid demo flows coming from email.
+
+Changes:
+- Added `EMAIL_PERMISSIONS_ENFORCED` to configuration and `.env.example`.
+- Changed `MailAutomationService` so email-side `ensure_active_user(...)`, capability enforcement, and `admin_scope` approval gating are skipped when `EMAIL_PERMISSIONS_ENFORCED=false`.
+- Kept the mailbox transport/domain guardrails intact, so sender-domain filtering and the rest of the technical workflow still operate normally.
+- Added a regression test that confirms an `admin_scope` email from a non-whitelisted sender still executes normally when relaxed mode is active.
+
+Verification:
+- Planned verification path is syntax validation plus live mailbox retest with `EMAIL_PERMISSIONS_ENFORCED=false`.
+
+Open points:
+- Once the permission layer is really configured, the deploy can switch back to `EMAIL_PERMISSIONS_ENFORCED=true` without reworking the mail flow again.
+
+## 2026-03-31 11:55
+
+Context:
+- After enabling `STATE_BACKEND=postgres` on Lada, the rebuilt `acme_youtrack_api` container entered a restart loop during application startup.
+- We also needed to preserve the operational access rule that Lada requires the explicit SSH key `~/.ssh/hank`.
+
+Changes:
+- Inspected `~/docker/acme_bot/docker-compose.yml` on Lada and confirmed `youtrack-api` was configured with `STATE_BACKEND=postgres` and a dedicated `assistant_rw` connection to the `assistant_ops` database. The credential is intentionally not recorded in repository documentation.
+- Verified that PostgreSQL on Lada runs from `~/docker/postgre_sql` as container `postgre_sql` on host port `8080`.
+- Confirmed the role `assistant_rw` and database `assistant_ops` already existed, so the root cause was not missing objects but credential mismatch.
+- Fixed the PostgreSQL side by resetting the `assistant_rw` password to the deploy-expected value, transferring ownership of `assistant_ops` to `assistant_rw`, and granting schema/default privileges on `public`.
+- Restarted `acme_youtrack_api` and confirmed the latest startup completed successfully with IMAP bootstrap and the mail polling runner active.
+- Recorded the Lada access convention: use `ssh -i ~/.ssh/hank -o IdentitiesOnly=yes hank@192.168.69.6`.
+
+Verification:
+- Read `docker compose ps` and `docker logs acme_youtrack_api` on Lada before and after the fix.
+- Before the fix, logs showed `psycopg.OperationalError: password authentication failed for user "assistant_rw"`.
+- After the fix, logs reached `Application startup complete` and `Uvicorn running on http://0.0.0.0:8000`.
+
+Open points:
+- The repository still contains substantial uncommitted local work around the multi-service/PostgreSQL transition; once stabilized, the same Lada-side fixes and deploy assumptions should be reflected in the committed source/config set.
+
 ## 2026-03-24 15:40
 
 Context:

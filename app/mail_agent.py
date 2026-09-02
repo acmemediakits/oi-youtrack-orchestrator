@@ -49,6 +49,9 @@ class MailAutomationService:
             ),
         )
 
+    def _email_permissions_enforced(self) -> bool:
+        return settings.email_permissions_enforced
+
     async def run_once(self) -> list[MailProcessingRecord]:
         results: list[MailProcessingRecord] = []
         logger.info("Starting mail polling cycle.")
@@ -100,7 +103,7 @@ class MailAutomationService:
                 continue
             try:
                 user = self.user_directory.resolve(requester_email) if (requester_email and self.user_directory) else None
-                if self.permissions and self.user_directory:
+                if self.permissions and self.user_directory and self._email_permissions_enforced():
                     self.permissions.ensure_active_user(user)
                 logger.info(
                     "Processing email message_id=%s sender=%s subject=%s",
@@ -111,7 +114,7 @@ class MailAutomationService:
                 planner_reply = await self._plan_with_ytbot(message)
                 plan = await self._build_execution_plan(message, planner_reply)
                 self._enforce_mail_permissions(message, user, plan)
-                if plan.admin_scope:
+                if self._requires_admin_approval(plan):
                     approval_reply = self._create_admin_approval(message, plan, requester_name, requester_email or "")
                     self.mailbox.send_reply(message, approval_reply)
                     self.mailbox.mark_seen(message.mailbox_uid)
@@ -278,8 +281,8 @@ class MailAutomationService:
         return domain.lower() in allowed_domains
 
     def _compose_request_text(self, message: MailboxMessage) -> str:
-        subject = (message.subject or "").strip()
-        body = (message.text or "").strip()
+        subject = self._sanitize_email_subject(message.subject)
+        body = self._sanitize_email_body(message.text)
         if subject and body:
             return f"{subject}\n\n{body}"
         return body or subject
@@ -344,7 +347,11 @@ class MailAutomationService:
             payload = self._extract_json_payload(raw_content)
             plan = MailExecutionPlan.model_validate(payload)
         except Exception:
-            logger.exception("Failed to parse planner JSON for message_id=%s. Falling back to deterministic mode.", message.message_id)
+            logger.exception(
+                "Failed to parse planner JSON for message_id=%s raw_content=%r. Falling back to deterministic mode.",
+                message.message_id,
+                raw_content[:2000],
+            )
             return fallback.model_copy(
                 update={
                     "reply_intent": "clarify",
@@ -363,7 +370,91 @@ class MailAutomationService:
         if stripped.startswith("```"):
             stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
             stripped = re.sub(r"\s*```$", "", stripped)
-        return json.loads(stripped)
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            candidate = self._extract_first_json_object(stripped)
+            if not candidate:
+                raise
+            return json.loads(candidate)
+
+    def _extract_first_json_object(self, text: str) -> str | None:
+        start = text.find("{")
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1]
+        return None
+
+    def _sanitize_email_subject(self, subject: str | None) -> str:
+        cleaned = (subject or "").strip()
+        cleaned = re.sub(r"\*{2,}\s*spam\s*\*{2,}\s*", "", cleaned, flags=re.IGNORECASE)
+        while True:
+            updated = re.sub(r"^\s*(?:re|fw|fwd)\s*:\s*", "", cleaned, flags=re.IGNORECASE)
+            if updated == cleaned:
+                break
+            cleaned = updated.strip()
+        return " ".join(cleaned.split())
+
+    def _sanitize_email_body(self, body: str | None) -> str:
+        text = (body or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not text.strip():
+            return ""
+
+        stop_markers = (
+            "--- Thread context ---",
+            "To unsubscribe from this group",
+            "Per annullare l'iscrizione",
+            "Questa email e' stata inoltrata dal bot",
+        )
+        lines: list[str] = []
+        previous_blank = False
+        for raw_line in text.split("\n"):
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            normalized = self._normalize_match_value(stripped)
+
+            if any(marker.lower() in stripped.lower() for marker in stop_markers):
+                break
+            if stripped.startswith(">"):
+                continue
+            if normalized.startswith(("from:", "subject:", "message-id:")):
+                continue
+            if re.match(r"^on .+wrote:$", stripped, flags=re.IGNORECASE):
+                break
+            if stripped.startswith("--") and lines:
+                break
+
+            if not stripped:
+                if not previous_blank and lines:
+                    lines.append("")
+                previous_blank = True
+                continue
+
+            lines.append(" ".join(stripped.split()))
+            previous_blank = False
+
+        return "\n".join(lines).strip()
 
     async def _resolve_project_id(self, project_hint: str | None) -> str | None:
         if not project_hint:
@@ -605,7 +696,7 @@ class MailAutomationService:
         return "\n".join(normalized_lines).strip()
 
     def _enforce_mail_permissions(self, message: MailboxMessage, user, plan: MailExecutionPlan) -> None:
-        if not self.permissions or not self.user_directory:
+        if not self.permissions or not self.user_directory or not self._email_permissions_enforced():
             return
         if plan.admin_scope:
             self.permissions.assert_capability(user, "admin_scope_email")
@@ -618,6 +709,9 @@ class MailAutomationService:
             return
         if plan.workflow_mode == "youtrack":
             self.permissions.assert_capability(user, "create_task")
+
+    def _requires_admin_approval(self, plan: MailExecutionPlan) -> bool:
+        return self._email_permissions_enforced() and plan.admin_scope
 
     def _create_admin_approval(self, message: MailboxMessage, plan: MailExecutionPlan, requester_name: str | None, requester_email: str) -> str:
         if not self.admin_approvals:

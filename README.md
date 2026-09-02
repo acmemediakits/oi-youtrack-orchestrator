@@ -1,5 +1,7 @@
 # YouTrack Open WebUI Orchestrator
 
+> Project transfer and continuation instructions: see [HANDOFF.md](HANDOFF.md).
+
 Backend OpenAPI pensato per Open WebUI che centralizza:
 
 - ingest di richieste da testo manuale o mailbox IMAP
@@ -58,6 +60,7 @@ Entry point separati disponibili:
   - `SERVICE_ROLE=monolith|tool_core|email_channel`
   - `STATE_BACKEND=json|postgres`
   - `DATABASE_URL=postgresql://...` quando si usa Postgres
+  - `EMAIL_PERMISSIONS_ENFORCED=true|false` per attivare o disattivare i blocchi RBAC/approval sul canale email
 - JSON runtime in `data/`: cartelle mailbox, domini mittenti ammessi, intervallo polling, `VERBOSE`
 - logs Docker: il worker mail scrive eventi su polling IMAP, filtro domini, chiamata Open WebUI e invio SMTP
 - cartelle IMAP: `INBOX`, `PROCESSING`, `PROCESSED`, `FAILED`, `REJECTED` usate come stato operativo principale del workflow mail
@@ -78,8 +81,8 @@ Entry point separati disponibili:
 - `power`: accesso avanzato via OI/API a report tempi, query avanzate, KB read/write e endpoint avanzati
 - canale Open WebUI/chat: se `OPENWEBUI_TRUSTED_CHANNEL_ENABLED=true`, gli endpoint tool possono girare senza `X-Actor-Email` e usano un actor trusted dedicato configurabile via `.env`
 - enforcement API utente: se arriva `X-Actor-Email`, il backend continua a usare whitelist e RBAC reali
-- canale email: resta separato dal chatbot e continua ad applicare whitelist domini mittenti, planner guardrails e approval `admin_scope`
-- richieste email classificate `admin_scope`: non vengono eseguite subito, ma richiedono approvazione del `SUPER_ADMIN_EMAIL` tramite token temporaneo con TTL 30 minuti
+- canale email: resta separato dal chatbot; in fase di sviluppo può girare in modalità rilassata con `EMAIL_PERMISSIONS_ENFORCED=false`, mantenendo però i guardrail tecnici del workflow mailbox
+- se `EMAIL_PERMISSIONS_ENFORCED=true`, le richieste email classificate `admin_scope` richiedono approvazione del `SUPER_ADMIN_EMAIL` tramite token temporaneo con TTL 30 minuti
 
 ## Endpoints
 
@@ -130,6 +133,7 @@ docker logs acme_youtrack_api --tail=100
 - Il parsing mail/planner non e' piu' regex-first: il modello decide la struttura, ma il backend mantiene i guardrail.
 - Open WebUI può usare il backend come tool OpenAPI e lasciare al modello il compito di produrre testo/decisioni.
 - Il canale Open WebUI/chat e il canale mailbox sono intenzionalmente separati: la chat gira in trusted assistant mode configurabile, mentre le email restano soggette a controlli anti-spoofing e anti-injection.
+- In questa fase di sviluppo/demo il layer permessi del canale email può restare disattivato; il filtro domini mittenti e i guardrail tecnici del bot restano comunque attivi.
 - Il planner email non e' piu' pensato come cervello hardcoded del monolite: il canale mailbox usa un orchestrator dedicato e un prompt asset esterno in `prompts/email_channel_planner.md`.
 - Il backend ora espone sia tool di scrittura sia tool di ricerca/listing, così l'assistente può cercare contesto prima di chiedere dettagli all'utente.
 - La lettura IMAP è supportata via servizio dedicato e può girare in polling automatico.

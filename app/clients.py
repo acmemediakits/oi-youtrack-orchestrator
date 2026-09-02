@@ -253,7 +253,13 @@ class OpenWebUIClient:
             headers["Authorization"] = f"Bearer {self.api_token}"
         return headers
 
-    async def _chat(self, messages: list[dict[str, str]], response_format: dict[str, Any] | None = None) -> OpenWebUIReply:
+    async def _chat(
+        self,
+        messages: list[dict[str, str]],
+        response_format: dict[str, Any] | None = None,
+        *,
+        disable_tools: bool = False,
+    ) -> OpenWebUIReply:
         if not self.api_token:
             raise RuntimeError("OPENWEBUI_API_TOKEN is not configured.")
 
@@ -264,6 +270,9 @@ class OpenWebUIClient:
         }
         if response_format:
             payload["response_format"] = response_format
+        if disable_tools:
+            payload["tool_choice"] = "none"
+            payload["tools"] = []
         logger.info("Calling Open WebUI model '%s' at %s", self.model_id, url)
         async with httpx.AsyncClient(timeout=float(self.timeout_seconds)) as client:
             response = await client.post(url, headers=self._headers(), json=payload)
@@ -318,6 +327,7 @@ class OpenWebUIClient:
         *,
         system_prompt: str,
         user_prompt: str,
+        disable_tools: bool = False,
     ) -> OpenWebUIReply:
         return await self._chat(
             [
@@ -325,4 +335,5 @@ class OpenWebUIClient:
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            disable_tools=disable_tools,
         )

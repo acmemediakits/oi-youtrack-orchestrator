@@ -70,6 +70,7 @@ class Settings:
     openwebui_trusted_actor_name: str = os.getenv("OPENWEBUI_TRUSTED_ACTOR_NAME", "YTbot")
     openwebui_trusted_actor_role: UserType = _env_user_type("OPENWEBUI_TRUSTED_ACTOR_ROLE", UserType.power)
     email_orchestrator_mode: str = os.getenv("EMAIL_ORCHESTRATOR_MODE", "openwebui").strip().lower()
+    email_permissions_enforced: bool = os.getenv("EMAIL_PERMISSIONS_ENFORCED", "false").lower() == "true"
 
     def build_imap_ssl_context(self) -> ssl.SSLContext:
         context = ssl.create_default_context()

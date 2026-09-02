@@ -52,6 +52,7 @@ class OpenWebUIEmailOrchestrator:
             return await self.openwebui.generate_structured_reply(
                 system_prompt=self._system_prompt(),
                 user_prompt=self._user_prompt(payload),
+                disable_tools=True,
             )
         except Exception:
             logger.exception("Email channel orchestrator failed for message_id=%s", payload.message_id)

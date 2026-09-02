@@ -4,6 +4,8 @@
 
 This project is an OpenAPI backend for Open WebUI that acts as an AI-operated back office for YouTrack.
 
+For cross-agent continuation, `HANDOFF.md` is the canonical transfer document. `AgentChatNorris.md` describes the broader shared-agent product this service is expected to join.
+
 The goal is to let a model:
 
 - read and normalize incoming client requests
@@ -57,6 +59,8 @@ Implemented today:
 - the repo now contains explicit multi-service entrypoints under `services/`, with `youtrack_core` and `email_channel` split as first-class deployable boundaries
 - the email channel now routes planning through a dedicated orchestrator wrapper plus external prompt asset, instead of keeping the planner prompt hardcoded inside the mail runner
 - operational state storage now supports a backend switch between local JSON files and PostgreSQL-compatible persistence
+- Lada operational access for deploy/debug tasks should use SSH key `~/.ssh/hank` explicitly when connecting as `hank@192.168.69.6`
+- the email permission layer can now be explicitly left relaxed during development/demo mode so incomplete whitelist/RBAC setup does not block mailbox execution
 
 Not yet complete:
 
@@ -266,7 +270,9 @@ Success criteria:
 - for mailbox automation, prefer a planner/executor split: model decides, backend executes
 - keep `.env` limited to secrets/bootstrap values, and keep mutable runtime settings in JSON-backed storage
 - keep chat/OI trust separate from mailbox trust: the Open WebUI tool channel may use a configured trusted assistant actor, but mailbox flows must keep sender-domain checks, spoofing resistance, and approval gates
+- when the email permission layer is not configured yet, prefer `EMAIL_PERMISSIONS_ENFORCED=false` so mailbox execution stays operational during development/demo while domain filtering and transport guardrails still apply
 - when debugging mailbox behavior, trust server/runtime logs and cross-check with more than one mail client before blaming backend state
+- when working on the Lada host, prefer `ssh -i ~/.ssh/hank -o IdentitiesOnly=yes hank@192.168.69.6 ...` so deploy/debug access uses the known-good key explicitly
 - after every relevant code change, update `AI_GUIDE.md` and `WORKLOG_AI.md`
 
 ## Next Recommended Tasks

@@ -29,6 +29,7 @@ from app.dependencies import (
 )
 from app.logging_utils import get_log_file_path, get_recent_logs, setup_logging
 from app.models import (
+    ActionPreview,
     AssistantProjectContext,
     ArticleSearchResult,
     CommitInput,
@@ -903,7 +904,18 @@ async def resolve_value(payload: ResolveValueInput, x_actor_email: str | None = 
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/actions/preview")
+@app.post(
+    "/actions/preview",
+    summary="Plan issue, worklog, or knowledge actions from natural language",
+    description=(
+        "Analyze a natural-language request and build an execution preview. "
+        "This endpoint can plan creation of NEW YouTrack issues, updates to EXISTING issues, "
+        "worklog entries, and knowledge-base articles. "
+        "Use it before `/actions/commit` when the user asks to create a ticket from plain text such as "
+        "`crea una issue per il progetto LucIA`."
+    ),
+    response_model=ActionPreview,
+)
 async def preview_actions(payload: PreviewInput, x_actor_email: str | None = Header(default=None)):
     actor = _resolve_actor(x_actor_email)
     _assert_capability(actor, "create_task")
@@ -914,7 +926,19 @@ async def preview_actions(payload: PreviewInput, x_actor_email: str | None = Hea
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/actions/commit", response_model=CommitResult)
+@app.post(
+    "/actions/commit",
+    summary="Execute a previously planned preview",
+    description=(
+        "Execute the operations contained in a preview. "
+        "If the preview contains `issue_operations` with action=`create`, this endpoint creates REAL YouTrack issues "
+        "via the backend integration. "
+        "If it contains worklog operations, it creates work items. "
+        "If it contains knowledge operations, it creates KB articles. "
+        "Use this after `/actions/preview` once the plan looks correct."
+    ),
+    response_model=CommitResult,
+)
 async def commit_actions(payload: CommitInput, x_actor_email: str | None = Header(default=None)) -> CommitResult:
     actor = _resolve_actor(x_actor_email)
     _assert_capability(actor, "create_task")

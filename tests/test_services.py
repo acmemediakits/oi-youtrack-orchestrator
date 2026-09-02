@@ -1041,6 +1041,64 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             settings.mailbox_processed_folder = previous_processed
             settings.youtrack_default_assignee_login = previous_assignee_login
 
+    async def test_mail_automation_relaxed_permissions_ignore_admin_scope_and_whitelist_user(self):
+        previous_domains = settings.mailbox_allowed_sender_domains
+        previous_processed = settings.mailbox_processed_folder
+        previous_permissions = settings.email_permissions_enforced
+        settings.mailbox_allowed_sender_domains = ("trusted.example",)
+        settings.mailbox_processed_folder = "PROCESSED"
+        settings.email_permissions_enforced = False
+        try:
+            mailbox = FakeMailboxService(
+                [
+                    type(
+                        "Message",
+                        (),
+                        {
+                            "message_id": "m-relaxed",
+                            "mailbox_uid": "23",
+                            "sender": "unknown@trusted.example",
+                            "subject": "supporto e debug",
+                            "text": "crea issue supporto e debug per Ellesanti",
+                        },
+                    )()
+                ]
+            )
+            service = MailAutomationService(
+                mailbox=mailbox,
+                openwebui=FakeOpenWebUIClient(
+                    payload={
+                        "request_text": "supporto e debug",
+                        "workflow_mode": "youtrack",
+                        "customer_label": "Ellesanti",
+                        "project_id": "0-7",
+                        "admin_scope": True,
+                        "needs_clarification": False,
+                        "reply_intent": "execute",
+                    }
+                ),
+                processed=self.mail_processing,
+                request_service=self.request_service,
+                preview_service=self.preview_service,
+                commit_service=self.commit_service,
+                youtrack_client=self.youtrack_client,
+                query_service=self.query_service,
+                issue_subscription_service=IssueSubscriptionService(self.issue_subscriptions, self.youtrack_client, mailbox),
+                user_directory=self.user_directory_service,
+                permissions=self.permission_service,
+                admin_approvals=AdminApprovalService(self.approvals, mailbox),
+            )
+            result = await service.run_once()
+            self.assertEqual(result[0].status, "processed")
+            self.assertEqual(mailbox.moves, [("23", "PROCESSED")])
+            self.assertEqual(mailbox.sent_messages, [])
+            self.assertIn("Issue aggiornata", mailbox.replies[0][1])
+            self.assertTrue(self.youtrack_client.created_issue_payloads)
+        finally:
+            settings.mailbox_allowed_sender_domains = previous_domains
+            settings.mailbox_processed_folder = previous_processed
+            settings.email_permissions_enforced = previous_permissions
+
     async def test_mail_automation_moves_clarification_reply_to_processing_folder(self):
         previous_domains = settings.mailbox_allowed_sender_domains
         previous_processing = settings.mailbox_processing_folder
@@ -1093,6 +1151,113 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         finally:
             settings.mailbox_allowed_sender_domains = previous_domains
             settings.mailbox_processing_folder = previous_processing
+
+    async def test_mail_automation_parses_planner_json_wrapped_in_prose(self):
+        previous_domains = settings.mailbox_allowed_sender_domains
+        previous_processed = settings.mailbox_processed_folder
+        settings.mailbox_allowed_sender_domains = ("trusted.example",)
+        settings.mailbox_processed_folder = "PROCESSED"
+        try:
+            mailbox = FakeMailboxService(
+                [
+                    type(
+                        "Message",
+                        (),
+                        {
+                            "message_id": "m-json-wrap",
+                            "mailbox_uid": "31",
+                            "sender": "ops@trusted.example",
+                            "subject": "Issue Amighetti",
+                            "text": "Mi crei gentilmente il task?",
+                        },
+                    )()
+                ]
+            )
+            wrapped_content = """Ecco il piano operativo:
+{
+  "request_text": "Crea una issue per Amighetti: redirect dalla front-page di community verso la pagina feed di un gruppo specifico.",
+  "workflow_mode": "youtrack",
+  "assist_intent": null,
+  "admin_scope": false,
+  "customer_label": "Amighetti",
+  "project_hint": "Amighetti",
+  "project_id": null,
+  "issue_summary": "Redirect community verso feed gruppo",
+  "issue_description": "Configurare un redirect dalla front-page di community verso la pagina feed di un gruppo specifico.",
+  "issue_assignee": null,
+  "delegate_to_name": null,
+  "delegate_to_email": null,
+  "delegate_subject": null,
+  "delegate_body": null,
+  "report_date_from": null,
+  "report_date_to": null,
+  "report_group_by": null,
+  "report_author_hint": null,
+  "needs_clarification": false,
+  "clarification_question": null,
+  "reply_intent": "execute",
+  "reply_draft": null
+}
+"""
+            service = MailAutomationService(
+                mailbox=mailbox,
+                openwebui=FakeOpenWebUIClient(content=wrapped_content),
+                processed=self.mail_processing,
+                request_service=self.request_service,
+                preview_service=self.preview_service,
+                commit_service=self.commit_service,
+                youtrack_client=self.youtrack_client,
+                query_service=self.query_service,
+                issue_subscription_service=IssueSubscriptionService(self.issue_subscriptions, self.youtrack_client, mailbox),
+            )
+            result = await service.run_once()
+            self.assertEqual(result[0].status, "processed")
+            self.assertEqual(mailbox.moves, [("31", "PROCESSED")])
+            self.assertIn("Issue aggiornata", mailbox.replies[0][1])
+            self.assertTrue(self.youtrack_client.created_issue_payloads)
+        finally:
+            settings.mailbox_allowed_sender_domains = previous_domains
+            settings.mailbox_processed_folder = previous_processed
+
+    def test_mail_request_text_strips_spam_footer_and_thread_noise(self):
+        service = MailAutomationService(
+            mailbox=None,
+            openwebui=None,
+            processed=None,
+            request_service=None,
+            preview_service=None,
+            commit_service=None,
+            youtrack_client=None,
+            query_service=None,
+            issue_subscription_service=None,
+        )
+        message = MailboxMessage(
+            message_id="<m-noise@example.test>",
+            mailbox_uid="32",
+            sender="Mirko Bianco <mirko@acmemk.com>",
+            subject="Re: ***Spam*** Issue per Amighetti",
+            text=(
+                "per amighetti devo impostare un redirect dalla front-page di community\n"
+                "verso la pagina feed di un gruppo specifico.\n\n"
+                "Mi crei gentilmente il task?\n\n"
+                "*MIRKO BIANCO*\n"
+                "Account & Developer\n\n"
+                "--- Thread context ---\n"
+                "From: Mirko Bianco <mirko@acmemk.com>\n"
+                "> per amighetti devo impostare un redirect dalla front-page di community\n"
+                "> verso la pagina feed di un gruppo specifico.\n\n"
+                "To unsubscribe from this group, stop receiving emails from it.\n"
+            ),
+            received_at=datetime.now(timezone.utc),
+        )
+
+        request_text = service._compose_request_text(message)
+        self.assertTrue(request_text.startswith("Issue per Amighetti"))
+        self.assertIn("Mi crei gentilmente il task?", request_text)
+        self.assertNotIn("***Spam***", request_text)
+        self.assertNotIn("--- Thread context ---", request_text)
+        self.assertNotIn("To unsubscribe from this group", request_text)
+        self.assertNotIn("> per amighetti", request_text)
 
     def test_mailbox_reply_body_preserves_thread_context(self):
         mailbox = MailboxService()

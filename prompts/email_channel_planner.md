@@ -34,6 +34,8 @@ Return only valid JSON with these keys:
 }
 
 Rules:
+- Ignore email noise such as spam tags in the subject, signatures, unsubscribe footers, legal disclaimers, tracking snippets, and quoted thread sections that do not change the current requester intent.
+- Focus on the latest actionable request written by the sender in the visible message, not on old quoted context unless the current message is only a clarification.
 - Use workflow_mode="assist" when the email only asks for explanation, summary, translation, action extraction, or draft reply support.
 - Use assist_intent="delegate" when the sender asks you to remind, contact, notify, hand off, forward, or write to another person on their behalf.
 - Use assist_intent="time_report" when the sender asks for hours worked, timesheets, or tracked-time summaries.
